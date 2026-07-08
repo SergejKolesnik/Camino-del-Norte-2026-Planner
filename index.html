@@ -217,6 +217,11 @@
       border-radius: 18px;
       background: rgba(255,255,255,.68);
     }
+    .point.flash {
+      outline: 3px solid rgba(217, 130, 69, .65);
+      box-shadow: 0 0 0 6px rgba(217, 130, 69, .14), var(--shadow);
+      transition: outline-color .2s ease, box-shadow .2s ease;
+    }
     .point-top {
       display: grid;
       grid-template-columns: 1fr auto;
@@ -433,7 +438,7 @@
     let autosyncTimer = null;
     let isSyncing = false;
     const EXPORT_VERSION = 2;
-    const types = ["поїзд", "літак", "автобус", "авто", "пішки", "готель", "інше"];
+    const types = ["поїзд", "літак", "автобус", "пором", "трансфер", "бронювання", "квиток", "авто", "пішки", "готель", "інше", "train", "flight", "bus", "ferry", "hotel", "booking", "ticket", "transfer"];
     const statuses = ["заплановано", "куплено", "підтверджено", "виконано"];
     const bookingTypes = ["квиток", "готель", "страховка", "інше"];
     const attachmentKinds = ["квиток", "QR", "бронювання", "скрін карти", "інше"];
@@ -659,6 +664,31 @@
       return `${a.date || ""} ${a.time || ""}`.localeCompare(`${b.date || ""} ${b.time || ""}`);
     }
 
+    function normalizedType(value = "") {
+      return String(value).trim().toLowerCase();
+    }
+
+    function isTicketLikeType(type = "") {
+      const value = normalizedType(type);
+      return [
+        "flight", "train", "bus", "ferry", "hotel", "booking", "ticket", "transfer",
+        "літак", "поїзд", "автобус", "пором", "готель", "бронювання", "квиток", "трансфер"
+      ].includes(value);
+    }
+
+    function isTicketLikeRoutePoint(pointId) {
+      const point = getRoutePoints().find(item => item.id === pointId);
+      return Boolean(point && isTicketLikeType(point.type));
+    }
+
+    function getTimelineTicketPoints(bookings = getBookings()) {
+      const linkedPointIds = new Set(bookings.map(item => item.routePointId).filter(Boolean));
+      return getRoutePoints()
+        .filter(point => isTicketLikeType(point.type))
+        .filter(point => !linkedPointIds.has(point.id))
+        .sort(sortPoints);
+    }
+
     function renderToday() {
       const item = closestPoint();
       return `
@@ -736,6 +766,7 @@
     function renderBookings() {
       const bookings = getBookings();
       const points = getRoutePoints();
+      const timelineTickets = getTimelineTicketPoints(bookings);
       return `
         <section class="screen" id="screen-bookings">
           <div class="card">
@@ -745,7 +776,12 @@
             <div class="actions"><button class="btn" type="button" onclick="openBookingForm()">Додати запис</button></div>
           </div>
           <div class="timeline">
-            ${bookings.length ? bookings.map(item => bookingCard(item, points)).join("") : `<div class="empty">Ще немає квитків або бронювань.</div>`}
+            ${bookings.length || timelineTickets.length
+              ? [
+                  ...bookings.map(item => bookingCard(item, points)),
+                  ...timelineTickets.map(item => timelineTicketCard(item))
+                ].join("")
+              : `<div class="empty">Ще немає квитків або бронювань.</div>`}
           </div>
         </section>
       `;
@@ -764,6 +800,7 @@
           </div>
           ${point ? `<p class="point-note"><b>Точка:</b> ${escapeHtml(point.from)} → ${escapeHtml(point.to)}</p>` : ""}
           ${item.note ? `<p class="point-note">${escapeHtml(item.note)}</p>` : ""}
+          ${point ? `<div class="attachments" data-route-files="${point.id}"></div>` : ""}
           <div class="attachments" data-booking-files="${item.id}"></div>
           <div class="actions">
             <button class="btn ghost" type="button" onclick="openBookingForm('${item.id}')">Редагувати</button>
@@ -772,6 +809,42 @@
           </div>
         </article>
       `;
+    }
+
+    function timelineTicketCard(item) {
+      const title = item.title || `${item.from || ""} → ${item.to || ""}`.trim() || "Точка маршруту";
+      const place = item.from && item.to ? `${item.from} → ${item.to}` : (item.address || item.from || item.to || "");
+      return `
+        <article class="point">
+          <div class="point-top">
+            <div>
+              <div class="point-title">${escapeHtml(title)}</div>
+              <div class="point-meta">${escapeHtml(item.date || "без дати")} ${escapeHtml(item.time || "")} · ${escapeHtml(item.type || "інше")}</div>
+            </div>
+            <span class="chip">${escapeHtml(item.status || "заплановано")}</span>
+          </div>
+          ${place ? `<p class="point-note"><b>Маршрут / місце:</b> ${escapeHtml(place)}</p>` : ""}
+          ${item.address ? `<p class="point-note"><b>Адреса:</b> ${escapeHtml(item.address)}</p>` : ""}
+          ${item.note ? `<p class="point-note">${escapeHtml(item.note)}</p>` : ""}
+          <div class="attachments" data-route-files="${item.id}"></div>
+          <div class="actions">
+            <button class="btn ghost" type="button" onclick="openTimelinePoint('${item.id}')">Відкрити точку в таймлайні</button>
+            <button class="btn ghost" type="button" onclick="openRouteFileForm('${item.id}')">Додати файл / скрін квитка</button>
+          </div>
+        </article>
+      `;
+    }
+
+    function openTimelinePoint(id) {
+      activateScreen("timeline");
+      setTimeout(() => {
+        const target = document.querySelector(`[data-route-files="${id}"]`)?.closest(".point");
+        if (target) {
+          target.scrollIntoView({ behavior: "smooth", block: "center" });
+          target.classList.add("flash");
+          setTimeout(() => target.classList.remove("flash"), 1200);
+        }
+      }, 80);
     }
 
     function renderChecklist(id) {
@@ -1119,7 +1192,7 @@
       const input = document.getElementById("fileInput");
       const file = input.files?.[0];
       if (!file) { alert("Оберіть файл."); return; }
-      if (storeName === "attachments") {
+      if (storeName === "attachments" || (storeName === "routeAttachments" && isTicketLikeRoutePoint(ownerId))) {
         const uploaded = await trySaveTicketFileToSupabase(ownerId, file);
         if (uploaded) {
           closeModal();
@@ -1136,7 +1209,7 @@
         mimeType: file.type || "application/octet-stream",
         createdAt: new Date().toISOString()
       });
-      if (storeName === "attachments") {
+      if (storeName === "attachments" || (storeName === "routeAttachments" && isTicketLikeRoutePoint(ownerId))) {
         setSyncStatus("Файл збережено локально. Для синхронізації підключіть Supabase.");
         addSyncLog("локальний файл", file.name);
       }
@@ -1214,7 +1287,7 @@
       const containers = [...document.querySelectorAll(selector)];
       if (!containers.length) return;
       const files = await dbAll(storeName);
-      const cloudTicketFiles = storeName === "attachments" ? getTicketFiles() : [];
+      const cloudTicketFiles = (storeName === "attachments" || storeName === "routeAttachments") ? getTicketFiles() : [];
       containers.forEach(container => {
         const ownerId = container.dataset.routeFiles || container.dataset.bookingFiles;
         const localOwn = files.filter(file => file.ownerId === ownerId);
