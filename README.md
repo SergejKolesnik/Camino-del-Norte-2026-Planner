@@ -24,7 +24,7 @@ https://sergejkolesnik.github.io/Camino-del-Norte-2026-Planner/
 
 Supabase URL/key не хардкодяться. Їх потрібно ввести у вкладці `☁️ Синхр.` у самому застосунку.
 
-Мобільний офлайн travel-planner / PWA без фреймворків. Основний режим роботи локальний: `localStorage` + `IndexedDB`. Supabase-синхронізація є необов'язковою і використовується тільки для текстових даних.
+Мобільний офлайн travel-planner / PWA без фреймворків. Основний режим роботи локальний: `localStorage` + `IndexedDB`. Supabase-синхронізація є необов'язковою: текстові дані синхронізуються через таблиці, а файли квитків - через Supabase Storage bucket `camino-files`.
 
 ## Запуск
 
@@ -112,6 +112,18 @@ create table if not exists public.tickets (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists public.ticket_files (
+  id text primary key,
+  trip_code text not null references public.trips(code) on delete cascade,
+  ticket_id text references public.tickets(id) on delete cascade,
+  filename text not null,
+  mime_type text not null default 'application/octet-stream',
+  storage_path text not null,
+  size_bytes bigint not null default 0,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 create table if not exists public.expenses (
   id text primary key,
   trip_code text not null references public.trips(code) on delete cascade,
@@ -142,6 +154,8 @@ create table if not exists public.checklists (
 
 create index if not exists route_points_trip_code_sort_idx on public.route_points(trip_code, sort_order);
 create index if not exists tickets_trip_code_idx on public.tickets(trip_code);
+create index if not exists ticket_files_trip_ticket_idx on public.ticket_files(trip_code, ticket_id);
+create unique index if not exists ticket_files_storage_path_unique_idx on public.ticket_files(storage_path);
 create index if not exists expenses_trip_code_idx on public.expenses(trip_code);
 create unique index if not exists trips_code_unique_idx on public.trips(code);
 
@@ -158,6 +172,11 @@ for each row execute function public.set_updated_at();
 drop trigger if exists trg_tickets_updated_at on public.tickets;
 create trigger trg_tickets_updated_at
 before update on public.tickets
+for each row execute function public.set_updated_at();
+
+drop trigger if exists trg_ticket_files_updated_at on public.ticket_files;
+create trigger trg_ticket_files_updated_at
+before update on public.ticket_files
 for each row execute function public.set_updated_at();
 
 drop trigger if exists trg_expenses_updated_at on public.expenses;
@@ -178,6 +197,7 @@ for each row execute function public.set_updated_at();
 alter table public.trips enable row level security;
 alter table public.route_points enable row level security;
 alter table public.tickets enable row level security;
+alter table public.ticket_files enable row level security;
 alter table public.expenses enable row level security;
 alter table public.notes enable row level security;
 alter table public.checklists enable row level security;
@@ -194,6 +214,10 @@ drop policy if exists "anon_all_tickets" on public.tickets;
 create policy "anon_all_tickets" on public.tickets
 for all to anon using (true) with check (true);
 
+drop policy if exists "anon_all_ticket_files" on public.ticket_files;
+create policy "anon_all_ticket_files" on public.ticket_files
+for all to anon using (true) with check (true);
+
 drop policy if exists "anon_all_expenses" on public.expenses;
 create policy "anon_all_expenses" on public.expenses
 for all to anon using (true) with check (true);
@@ -205,6 +229,40 @@ for all to anon using (true) with check (true);
 drop policy if exists "anon_all_checklists" on public.checklists;
 create policy "anon_all_checklists" on public.checklists
 for all to anon using (true) with check (true);
+
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values (
+  'camino-files',
+  'camino-files',
+  false,
+  20971520,
+  array['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf']
+)
+on conflict (id) do update set
+  public = excluded.public,
+  file_size_limit = excluded.file_size_limit,
+  allowed_mime_types = excluded.allowed_mime_types;
+
+drop policy if exists "anon_read_camino_files" on storage.objects;
+create policy "anon_read_camino_files" on storage.objects
+for select to anon
+using (bucket_id = 'camino-files');
+
+drop policy if exists "anon_insert_camino_files" on storage.objects;
+create policy "anon_insert_camino_files" on storage.objects
+for insert to anon
+with check (bucket_id = 'camino-files');
+
+drop policy if exists "anon_update_camino_files" on storage.objects;
+create policy "anon_update_camino_files" on storage.objects
+for update to anon
+using (bucket_id = 'camino-files')
+with check (bucket_id = 'camino-files');
+
+drop policy if exists "anon_delete_camino_files" on storage.objects;
+create policy "anon_delete_camino_files" on storage.objects
+for delete to anon
+using (bucket_id = 'camino-files');
 ```
 
 Важливо: ці RLS policies відкривають таблиці для anon key. Для приватного персонального project це найпростіший режим. Не публікуйте URL/key у відкритому репозиторії. Для публічного multi-user сценарію потрібна Supabase Auth і жорсткіші policies.
@@ -229,16 +287,21 @@ for all to anon using (true) with check (true);
 ## Що синхронізується
 
 - маршрутні точки;
-- квитки та бронювання без файлів;
+- квитки та бронювання;
+- файли квитків і бронювань через Supabase Storage bucket `camino-files` та таблицю `ticket_files`;
 - бюджет;
 - нотатки;
 - стани чек-листів.
 
-Синхронізація порівнює `updated_at` і використовує правило `lastUpdated wins`.
+Синхронізація порівнює `updated_at` і використовує правило `lastUpdated wins`. Після локальних змін застосунок запускає autosync через debounce приблизно 2.5 секунди. Якщо Supabase недоступний, застосунок не падає і показує статус `Є локальні зміни` або `Помилка sync`.
 
-## Що поки не синхронізується
+## Файли та fallback
 
-Скріншоти квитків, PDF і вкладення зберігаються тільки на цьому пристрої в IndexedDB. Для другого телефона їх потрібно додати окремо.
+Якщо Supabase підключений, скріншоти квитків, PDF і бронювання завантажуються у Storage bucket `camino-files`, а metadata зберігається в таблиці `ticket_files`.
+
+Якщо Supabase не підключений або недоступний, файл зберігається локально в IndexedDB і застосунок показує повідомлення: `Файл збережено локально. Для синхронізації підключіть Supabase.`
+
+Локальні IndexedDB-файли не потрапляють на інші пристрої, доки їх не додати повторно після підключення Supabase.
 
 ## Як перевірити синхронізацію
 
@@ -260,7 +323,8 @@ for all to anon using (true) with check (true);
 Локальні дані:
 
 - маршрут, квитки, бюджет, нотатки, чек-листи, sync config - `localStorage`;
-- скріни, PDF і вкладення - `IndexedDB`.
+- локальні fallback-скріни, PDF і вкладення - `IndexedDB`;
+- хмарні файли квитків - Supabase Storage `camino-files`.
 
 ## Експорт та імпорт
 

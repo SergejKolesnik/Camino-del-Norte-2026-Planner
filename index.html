@@ -428,6 +428,10 @@
     const SYNC_META_KEY = "camino2026_sync_meta";
     const SYNC_STATUS_KEY = "camino2026_sync_status";
     const SYNC_LOG_KEY = "camino2026_sync_log";
+    const TICKET_FILES_KEY = "camino2026_ticket_files";
+    const AUTOSYNC_DELAY = 2500;
+    let autosyncTimer = null;
+    let isSyncing = false;
     const EXPORT_VERSION = 2;
     const types = ["поїзд", "літак", "автобус", "авто", "пішки", "готель", "інше"];
     const statuses = ["заплановано", "куплено", "підтверджено", "виконано"];
@@ -520,6 +524,7 @@
       }
       saveSyncMeta(meta);
       setSyncStatus("Є локальні зміни");
+      scheduleAutosync();
     }
 
     function touchMany(scope, ids) {
@@ -529,6 +534,7 @@
       ids.forEach(id => { meta[scope][id] = stamp; });
       saveSyncMeta(meta);
       setSyncStatus("Є локальні зміни");
+      scheduleAutosync();
     }
 
     function getLocalUpdated(scope, id = "") {
@@ -551,6 +557,8 @@
       localStorage.setItem(SYNC_STATUS_KEY, value);
       const status = document.getElementById("syncStatusText");
       if (status) status.textContent = value;
+      const compact = document.getElementById("syncCompactStatus");
+      if (compact) compact.textContent = value;
     }
 
     function getSyncLog() {
@@ -573,6 +581,48 @@
 
     function getSyncConfig() {
       return readJSON(SYNC_CONFIG_KEY, { url: "", anonKey: "", tripCode: "camino-2026" });
+    }
+
+    function getTicketFiles() {
+      return readJSON(TICKET_FILES_KEY, []);
+    }
+
+    function saveTicketFiles(files, options = {}) {
+      localStorage.setItem(TICKET_FILES_KEY, JSON.stringify(files));
+      if (options.markDirty !== false) {
+        setSyncStatus("Є локальні зміни");
+        scheduleAutosync();
+      }
+    }
+
+    function getOptionalSupabaseClient() {
+      const config = getSyncConfig();
+      if (!config.url || !config.anonKey || !config.tripCode) return null;
+      if (!window.supabase || typeof window.supabase.createClient !== "function") return null;
+      return { client: window.supabase.createClient(config.url, config.anonKey), tripCode: config.tripCode };
+    }
+
+    function scheduleAutosync() {
+      clearTimeout(autosyncTimer);
+      autosyncTimer = setTimeout(() => {
+        autosyncTimer = null;
+        autosyncNow();
+      }, AUTOSYNC_DELAY);
+    }
+
+    async function autosyncNow() {
+      if (isSyncing) return;
+      const config = getSyncConfig();
+      if (!config.url || !config.anonKey || !config.tripCode || !window.supabase) {
+        setSyncStatus("Є локальні зміни");
+        return;
+      }
+      try {
+        await syncNow({ silent: true });
+      } catch (error) {
+        setSyncStatus("Помилка sync");
+        addSyncLog("помилка autosync", error.message);
+      }
     }
 
     function getRoutePoints() {
@@ -690,7 +740,8 @@
         <section class="screen" id="screen-bookings">
           <div class="card">
             <h2>Квитки та бронювання</h2>
-            <p class="muted">Записи зберігаються в localStorage, файли та скріни - в IndexedDB на конкретному телефоні.</p>
+            <p class="muted">Записи зберігаються в localStorage. Файли за Supabase підключенням завантажуються у Storage, без Supabase - локально в IndexedDB.</p>
+            <div class="soft small"><strong>Sync:</strong> <span id="syncCompactStatus">${escapeHtml(localStorage.getItem(SYNC_STATUS_KEY) || "Локально")}</span></div>
             <div class="actions"><button class="btn" type="button" onclick="openBookingForm()">Додати запис</button></div>
           </div>
           <div class="timeline">
@@ -789,7 +840,7 @@
         <section class="screen" id="screen-sync">
           <div class="card">
             <h2>Синхронізація</h2>
-            <p class="muted">Supabase є додатковим шаром. Якщо його не налаштовано, усе працює локально як раніше.</p>
+            <p class="muted">Supabase є додатковим шаром. Текстові дані синхронізуються через таблиці, а файли квитків - через Storage bucket camino-files. Якщо Supabase не налаштовано, усе працює локально як раніше.</p>
             <div class="form-grid">
               <div class="field"><label for="syncUrl">Supabase URL</label><input id="syncUrl" type="url" value="${escapeHtml(config.url)}" placeholder="https://xxxx.supabase.co"></div>
               <div class="field"><label for="syncAnonKey">Publishable (anon) key</label><input id="syncAnonKey" type="password" value="${escapeHtml(config.anonKey)}" placeholder="eyJ..."></div>
@@ -1068,6 +1119,14 @@
       const input = document.getElementById("fileInput");
       const file = input.files?.[0];
       if (!file) { alert("Оберіть файл."); return; }
+      if (storeName === "attachments") {
+        const uploaded = await trySaveTicketFileToSupabase(ownerId, file);
+        if (uploaded) {
+          closeModal();
+          await renderAllAttachments();
+          return;
+        }
+      }
       await dbPut(storeName, {
         id: generateId(),
         ownerId,
@@ -1077,24 +1136,115 @@
         mimeType: file.type || "application/octet-stream",
         createdAt: new Date().toISOString()
       });
+      if (storeName === "attachments") {
+        setSyncStatus("Файл збережено локально. Для синхронізації підключіть Supabase.");
+        addSyncLog("локальний файл", file.name);
+      }
       closeModal();
       renderAllAttachments();
     }
 
+    function safePathPart(value) {
+      return String(value || "file").normalize("NFKD").replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80) || "file";
+    }
+
+    async function trySaveTicketFileToSupabase(ticketId, file) {
+      const setup = getOptionalSupabaseClient();
+      if (!setup) return false;
+      try {
+        setSyncStatus("Синхронізація...");
+        const { client, tripCode } = setup;
+        await upsertTrip(client, tripCode);
+        const id = generateId();
+        const storagePath = `${safePathPart(tripCode)}/tickets/${safePathPart(ticketId)}/${id}_${safePathPart(file.name)}`;
+        const { error: uploadError } = await client.storage.from("camino-files").upload(storagePath, file, {
+          cacheControl: "3600",
+          contentType: file.type || "application/octet-stream",
+          upsert: false
+        });
+        if (uploadError) throw uploadError;
+        const row = {
+          id,
+          trip_code: tripCode,
+          ticket_id: ticketId,
+          filename: file.name,
+          mime_type: file.type || "application/octet-stream",
+          storage_path: storagePath,
+          size_bytes: file.size || 0,
+          created_at: nowISO(),
+          updated_at: nowISO()
+        };
+        await cloudUpsert(client, "ticket_files", [row]);
+        saveTicketFiles([rowToTicketFile(row), ...getTicketFiles().filter(item => item.id !== id)], { markDirty: false });
+        setSyncStatus("Синхронізовано");
+        addSyncLog("завантажено файл", file.name);
+        return true;
+      } catch (error) {
+        setSyncStatus("Помилка sync");
+        addSyncLog("помилка файлу", error.message);
+        alert(`Не вдалося завантажити файл у Supabase. Файл буде збережено локально. ${error.message}`);
+        return false;
+      }
+    }
+
     async function renderAllAttachments() {
+      await refreshTicketFileSignedUrls();
       await renderFiles("routeAttachments", "[data-route-files]");
       await renderFiles("attachments", "[data-booking-files]");
+    }
+
+    async function refreshTicketFileSignedUrls() {
+      const setup = getOptionalSupabaseClient();
+      if (!setup) return;
+      const files = getTicketFiles();
+      const needsRefresh = files.filter(file =>
+        String(file.mimeType || "").startsWith("image/") &&
+        (!file.signedUrl || new Date(file.signedUrlExpiresAt || 0).getTime() < Date.now() + 60000)
+      );
+      if (!needsRefresh.length) return;
+      const refreshed = new Map();
+      for (const file of needsRefresh) {
+        const { data, error } = await setup.client.storage.from("camino-files").createSignedUrl(file.storagePath, 60 * 60);
+        if (!error) refreshed.set(file.id, { ...file, signedUrl: data.signedUrl, signedUrlExpiresAt: new Date(Date.now() + 55 * 60 * 1000).toISOString() });
+      }
+      if (refreshed.size) saveTicketFiles(files.map(file => refreshed.get(file.id) || file), { markDirty: false });
     }
 
     async function renderFiles(storeName, selector) {
       const containers = [...document.querySelectorAll(selector)];
       if (!containers.length) return;
       const files = await dbAll(storeName);
+      const cloudTicketFiles = storeName === "attachments" ? getTicketFiles() : [];
       containers.forEach(container => {
         const ownerId = container.dataset.routeFiles || container.dataset.bookingFiles;
-        const own = files.filter(file => file.ownerId === ownerId);
-        container.innerHTML = own.map(file => fileView(storeName, file)).join("");
+        const localOwn = files.filter(file => file.ownerId === ownerId);
+        const cloudOwn = cloudTicketFiles.filter(file => file.ticketId === ownerId);
+        container.innerHTML = [
+          ...cloudOwn.map(file => cloudFileView(file)),
+          ...localOwn.map(file => fileView(storeName, file))
+        ].join("");
       });
+    }
+
+    function cloudFileView(file) {
+      const isImage = String(file.mimeType || "").startsWith("image/");
+      const preview = isImage && file.signedUrl
+        ? `<img class="thumb" src="${escapeHtml(file.signedUrl)}" alt="${escapeHtml(file.filename)}">`
+        : `<div class="thumb">${String(file.mimeType || "").includes("pdf") ? "PDF" : "FILE"}</div>`;
+      return `
+        <div class="attachment">
+          ${preview}
+          <div>
+            <strong>${escapeHtml(file.filename)}</strong>
+            <div class="small muted">Supabase Storage · ${escapeHtml(file.mimeType || "file")} · ${Number(file.sizeBytes || 0)} bytes</div>
+            <div class="actions">
+              <button class="btn ghost" type="button" onclick="openCloudFile('${file.id}')">Відкрити</button>
+              <button class="btn ghost" type="button" onclick="downloadCloudFile('${file.id}')">Завантажити</button>
+              <button class="btn danger" type="button" onclick="deleteCloudFile('${file.id}')">Видалити</button>
+            </div>
+          </div>
+        </div>
+      `;
     }
 
     function fileView(storeName, file) {
@@ -1120,9 +1270,74 @@
       renderAllAttachments();
     }
 
+    async function openCloudFile(id) {
+      const file = await ensureSignedTicketFile(id);
+      if (file?.signedUrl) window.open(file.signedUrl, "_blank", "noopener");
+    }
+
+    async function downloadCloudFile(id) {
+      const file = await ensureSignedTicketFile(id);
+      if (!file?.signedUrl) return;
+      const link = document.createElement("a");
+      link.href = file.signedUrl;
+      link.download = file.filename || "camino-file";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    }
+
+    async function ensureSignedTicketFile(id) {
+      const files = getTicketFiles();
+      let file = files.find(item => item.id === id);
+      if (!file) return null;
+      if (file.signedUrl && new Date(file.signedUrlExpiresAt || 0).getTime() > Date.now() + 60000) return file;
+      const setup = getOptionalSupabaseClient();
+      if (!setup) {
+        alert("Підключіть Supabase, щоб відкрити файл з хмари.");
+        return file;
+      }
+      const { data, error } = await setup.client.storage.from("camino-files").createSignedUrl(file.storagePath, 60 * 60);
+      if (error) {
+        setSyncStatus("Помилка sync");
+        addSyncLog("помилка signed url", error.message);
+        alert(error.message);
+        return file;
+      }
+      file = { ...file, signedUrl: data.signedUrl, signedUrlExpiresAt: new Date(Date.now() + 55 * 60 * 1000).toISOString() };
+      saveTicketFiles(files.map(item => item.id === id ? file : item), { markDirty: false });
+      renderAllAttachments();
+      return file;
+    }
+
+    async function deleteCloudFile(id, options = {}) {
+      if (!options.skipConfirm && !confirm("Видалити файл з Supabase Storage?")) return;
+      const files = getTicketFiles();
+      const file = files.find(item => item.id === id);
+      if (!file) return;
+      const setup = getOptionalSupabaseClient();
+      try {
+        if (setup) {
+          await setup.client.storage.from("camino-files").remove([file.storagePath]);
+          const { error } = await setup.client.from("ticket_files").delete().eq("id", id).eq("trip_code", setup.tripCode);
+          if (error) throw error;
+        }
+        saveTicketFiles(files.filter(item => item.id !== id), { markDirty: false });
+        setSyncStatus(setup ? "Синхронізовано" : "Є локальні зміни");
+        addSyncLog("видалено файл", file.filename);
+      } catch (error) {
+        setSyncStatus("Помилка sync");
+        addSyncLog("помилка видалення файлу", error.message);
+      }
+      renderAllAttachments();
+    }
+
     async function deleteFilesByOwner(storeName, ownerId) {
       const files = await dbAll(storeName);
       await Promise.all(files.filter(file => file.ownerId === ownerId).map(file => dbDelete(storeName, file.id)));
+      if (storeName === "attachments") {
+        const cloudFiles = getTicketFiles().filter(file => file.ticketId === ownerId);
+        for (const file of cloudFiles) await deleteCloudFile(file.id, { skipConfirm: true });
+      }
       renderAllAttachments();
     }
 
@@ -1371,6 +1586,47 @@
       };
     }
 
+    function ticketFileToRow(item, tripCode) {
+      return {
+        id: item.id,
+        trip_code: tripCode,
+        ticket_id: item.ticketId || item.ticket_id || "",
+        filename: item.filename || "",
+        mime_type: item.mimeType || item.mime_type || "application/octet-stream",
+        storage_path: item.storagePath || item.storage_path || "",
+        size_bytes: Number(item.sizeBytes || item.size_bytes || 0),
+        created_at: item.createdAt || item.created_at || nowISO(),
+        updated_at: item.updatedAt || item.updated_at || nowISO()
+      };
+    }
+
+    function rowToTicketFile(row) {
+      return {
+        id: row.id,
+        tripCode: row.trip_code || "",
+        ticketId: row.ticket_id || "",
+        filename: row.filename || "",
+        mimeType: row.mime_type || "application/octet-stream",
+        storagePath: row.storage_path || "",
+        sizeBytes: Number(row.size_bytes || 0),
+        createdAt: row.created_at || nowISO(),
+        updatedAt: row.updated_at || nowISO()
+      };
+    }
+
+    async function hydrateSignedTicketFiles(client, files) {
+      const hydrated = [];
+      for (const file of files) {
+        if (!String(file.mimeType || "").startsWith("image/")) {
+          hydrated.push(file);
+          continue;
+        }
+        const { data, error } = await client.storage.from("camino-files").createSignedUrl(file.storagePath, 60 * 60);
+        hydrated.push(error ? file : { ...file, signedUrl: data.signedUrl, signedUrlExpiresAt: new Date(Date.now() + 55 * 60 * 1000).toISOString() });
+      }
+      return hydrated;
+    }
+
     function expenseToRow(item, tripCode) {
       const id = String(item.id || generateId());
       const updated_at = getLocalUpdated("expenses", id) === "1970-01-01T00:00:00.000Z" ? nowISO() : getLocalUpdated("expenses", id);
@@ -1425,6 +1681,7 @@
         await cloudReplace(client, "route_points", tripCode, getRoutePoints().map((item, index) => routeToRow(item, index, tripCode)));
         addSyncLog("записано маршрут", `${getRoutePoints().length} точок`);
         await cloudReplace(client, "tickets", tripCode, getBookings().map(item => ticketToRow(item, tripCode)));
+        await cloudReplace(client, "ticket_files", tripCode, getTicketFiles().map(item => ticketFileToRow(item, tripCode)));
         await cloudReplace(client, "expenses", tripCode, getExpenses().map(item => expenseToRow(item, tripCode)));
         await uploadNotes(client, tripCode);
         await uploadChecklists(client, tripCode);
@@ -1440,13 +1697,15 @@
       try {
         setSyncStatus("синхронізація...");
         const { client, tripCode } = getSupabaseClient();
-        const [routes, tickets, expenses] = await Promise.all([
+        const [routes, tickets, ticketFiles, expenses] = await Promise.all([
           cloudSelect(client, "route_points", tripCode),
           cloudSelect(client, "tickets", tripCode),
+          cloudSelect(client, "ticket_files", tripCode),
           cloudSelect(client, "expenses", tripCode)
         ]);
         localStorage.setItem(ROUTE_KEY, JSON.stringify(routes.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)).map(rowToRoute)));
         localStorage.setItem(BOOKINGS_KEY, JSON.stringify(tickets.map(rowToTicket)));
+        saveTicketFiles(await hydrateSignedTicketFiles(client, ticketFiles.map(rowToTicketFile)), { markDirty: false });
         localStorage.setItem("camino2026_expenses", JSON.stringify(expenses.map(rowToExpense)));
         await pullNotes(client, tripCode);
         await pullChecklists(client, tripCode);
@@ -1464,9 +1723,11 @@
       return new Date(cloudUpdated || "1970-01-01T00:00:00.000Z").getTime() > new Date(localUpdated || "1970-01-01T00:00:00.000Z").getTime();
     }
 
-    async function syncNow() {
+    async function syncNow(options = {}) {
+      if (isSyncing) return;
+      isSyncing = true;
       try {
-        setSyncStatus("синхронізація...");
+        setSyncStatus("Синхронізація...");
         const { client, tripCode } = getSupabaseClient();
         await upsertTrip(client, tripCode);
 
@@ -1483,6 +1744,20 @@
         localStorage.setItem(BOOKINGS_KEY, JSON.stringify(ticketResult.local));
         await cloudUpsert(client, "tickets", ticketResult.pushRows);
 
+        const cloudTicketFiles = await cloudSelect(client, "ticket_files", tripCode);
+        const localTicketFiles = getTicketFiles();
+        const localFileMap = new Map(localTicketFiles.map(file => [String(file.id), file]));
+        const cloudFileMap = new Map(cloudTicketFiles.map(file => [String(file.id), rowToTicketFile(file)]));
+        const mergedFiles = [...localTicketFiles];
+        cloudFileMap.forEach((file, id) => {
+          if (!localFileMap.has(id)) mergedFiles.push(file);
+        });
+        const localFileRows = localTicketFiles
+          .filter(file => file.storagePath)
+          .map(file => ticketFileToRow(file, tripCode));
+        await cloudUpsert(client, "ticket_files", localFileRows);
+        saveTicketFiles(await hydrateSignedTicketFiles(client, mergedFiles), { markDirty: false });
+
         const cloudExpenses = await cloudSelect(client, "expenses", tripCode);
         const expenseResult = mergeByUpdatedAt(getExpenses(), cloudExpenses, "expenses", rowToExpense, item => expenseToRow(item, tripCode));
         localStorage.setItem("camino2026_expenses", JSON.stringify(expenseResult.local));
@@ -1490,12 +1765,15 @@
 
         await syncNotes(client, tripCode);
         await syncChecklists(client, tripCode);
-        setSyncStatus("синхронізовано");
-        addSyncLog("синхронізовано", "lastUpdated wins");
+        setSyncStatus("Синхронізовано");
+        addSyncLog(options.silent ? "autosync" : "синхронізовано", "lastUpdated wins");
         refresh();
       } catch (error) {
-        setSyncStatus(`помилка: ${error.message}`);
+        setSyncStatus("Помилка sync");
         addSyncLog("помилка", error.message);
+        if (options.silent) throw error;
+      } finally {
+        isSyncing = false;
       }
     }
 
