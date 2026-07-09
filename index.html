@@ -285,9 +285,9 @@
     }
 
     .items { display: grid; gap: 8px; margin-top: 12px; }
-    label.item {
+    .item {
       display: grid;
-      grid-template-columns: 32px 1fr;
+      grid-template-columns: 32px 1fr auto;
       align-items: center;
       min-height: 54px;
       gap: 12px;
@@ -297,7 +297,8 @@
       border: 1px solid var(--line);
     }
     input[type="checkbox"] { width: 28px; height: 28px; margin: 0; accent-color: var(--green); }
-    label.item input:checked + span { color: var(--muted); text-decoration: line-through; }
+    .item input:checked + span { color: var(--muted); text-decoration: line-through; }
+    .item-tools { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
     .progress { height: 12px; margin: 8px 0 3px; border-radius: 999px; overflow: hidden; background: rgba(23,37,43,.1); }
     .bar { height: 100%; width: 0; border-radius: inherit; background: linear-gradient(90deg, var(--green), var(--ocean)); transition: width .2s ease; }
 
@@ -518,6 +519,35 @@
 
     function readJSON(key, fallback) {
       try { return JSON.parse(localStorage.getItem(key) || "null") ?? fallback; } catch { return fallback; }
+    }
+
+    function getChecklistState(list) {
+      const saved = readJSON(list.storage, null);
+      if (saved && Array.isArray(saved.items)) {
+        return {
+          version: 2,
+          items: saved.items.map((item, index) => ({
+            id: item.id || `item_${index}`,
+            text: item.text || list.items[index] || "",
+            checked: Boolean(item.checked)
+          })).filter(item => item.text)
+        };
+      }
+      if (Array.isArray(saved)) {
+        return {
+          version: 2,
+          items: list.items.map((text, index) => ({ id: `base_${index}`, text, checked: Boolean(saved[index]) }))
+        };
+      }
+      return {
+        version: 2,
+        items: list.items.map((text, index) => ({ id: `base_${index}`, text, checked: false }))
+      };
+    }
+
+    function saveChecklistState(list, state, options = {}) {
+      localStorage.setItem(list.storage, JSON.stringify({ version: 2, items: state.items }));
+      if (options.markDirty !== false) touchSync("checklists", list.storage);
     }
 
     function nowISO() {
@@ -756,7 +786,7 @@
             <button class="btn ghost" type="button" onclick="copyPoint('${item.id}')">Скопіювати</button>
             <button class="btn secondary" type="button" onclick="movePoint('${item.id}', -1)" ${index === 0 ? "disabled" : ""}>Вгору</button>
             <button class="btn secondary" type="button" onclick="movePoint('${item.id}', 1)" ${index === total - 1 ? "disabled" : ""}>Вниз</button>
-            <button class="btn ghost" type="button" onclick="openRouteFileForm('${item.id}')">Додати файл</button>
+            <button class="btn ghost" type="button" onclick="openRouteFileForm('${item.id}')">Додати PDF / фото / QR</button>
             <button class="btn danger" type="button" onclick="deletePoint('${item.id}')">Видалити</button>
           </div>
         </article>
@@ -799,11 +829,12 @@
           </div>
           ${point ? `<p class="point-note"><b>Точка:</b> ${escapeHtml(point.from)} → ${escapeHtml(point.to)}</p>` : ""}
           ${item.note ? `<p class="point-note">${escapeHtml(item.note)}</p>` : ""}
+          ${point ? `<div class="attachments" data-route-files="${point.id}"></div>` : ""}
           <div class="attachments" data-booking-files="${item.id}"></div>
           <div class="actions">
             ${point ? `<button class="btn ghost" type="button" onclick="openTimelineForRoutePoint('${point.id}')">Відкрити у таймлайні</button>` : ""}
             <button class="btn ghost" type="button" onclick="openBookingForm('${item.id}')">Редагувати</button>
-            <button class="btn ghost" type="button" onclick="openBookingFileForm('${item.id}')">Додати файл</button>
+            <button class="btn ghost" type="button" onclick="${point ? `openRouteFileForm('${point.id}')` : `openBookingFileForm('${item.id}')`}">Додати PDF / фото / QR</button>
             <button class="btn danger" type="button" onclick="deleteBooking('${item.id}')">Видалити</button>
           </div>
         </article>
@@ -828,7 +859,7 @@
           <div class="actions">
             <button class="btn ghost" type="button" onclick="openTimelineForRoutePoint('${item.id}')">Відкрити у таймлайні</button>
             <button class="btn ghost" type="button" onclick="openPointForm('${item.id}')">Редагувати точку</button>
-            <button class="btn ghost" type="button" onclick="openRouteFileForm('${item.id}')">Додати файл</button>
+            <button class="btn ghost" type="button" onclick="openRouteFileForm('${item.id}')">Додати PDF / фото / QR</button>
           </div>
         </article>
       `;
@@ -836,14 +867,27 @@
 
     function renderChecklist(id) {
       const list = checklists[id];
+      const state = getChecklistState(list);
       return `
         <section class="screen" id="screen-${id}">
-          <div class="card checklist" data-storage="${list.storage}">
+          <div class="card checklist" data-checklist="${id}" data-storage="${list.storage}">
             <h2>${list.title}</h2>
             <p class="small muted doneText"></p>
             <div class="progress"><div class="bar"></div></div>
-            <div class="items">${list.items.map(item => `<label class="item"><input type="checkbox"><span>${item}</span></label>`).join("")}</div>
-            <div class="actions"><button class="btn secondary reset" type="button">Скинути галочки</button></div>
+            <div class="items">${state.items.map(item => `
+              <div class="item" data-item-id="${item.id}">
+                <input type="checkbox" ${item.checked ? "checked" : ""}>
+                <span>${escapeHtml(item.text)}</span>
+                <div class="item-tools">
+                  <button class="btn ghost edit-item" type="button">Редагувати</button>
+                  <button class="btn danger delete-item" type="button">Видалити</button>
+                </div>
+              </div>
+            `).join("")}</div>
+            <div class="actions">
+              <button class="btn add-item" type="button">Додати пункт</button>
+              <button class="btn secondary reset" type="button">Скинути галочки</button>
+            </div>
           </div>
         </section>
       `;
@@ -1005,27 +1049,49 @@
     }
 
     function initChecklist(card) {
-      const key = card.dataset.storage;
+      const list = checklists[card.dataset.checklist];
+      let state = getChecklistState(list);
       const boxes = [...card.querySelectorAll('input[type="checkbox"]')];
-      const saved = readJSON(key, []);
       boxes.forEach((box, index) => {
-        box.checked = Boolean(saved[index]);
-        box.addEventListener("change", save);
+        box.addEventListener("change", () => {
+          state.items[index].checked = box.checked;
+          save();
+        });
       });
+      card.querySelector(".add-item")?.addEventListener("click", () => {
+        const text = prompt("Новий пункт чек-листа");
+        if (!text?.trim()) return;
+        state.items.push({ id: generateId(), text: text.trim(), checked: false });
+        save();
+        refresh();
+      });
+      card.querySelectorAll(".edit-item").forEach((button, index) => button.addEventListener("click", () => {
+        const text = prompt("Назва пункту", state.items[index].text);
+        if (!text?.trim()) return;
+        state.items[index].text = text.trim();
+        save();
+        refresh();
+      }));
+      card.querySelectorAll(".delete-item").forEach((button, index) => button.addEventListener("click", () => {
+        if (!confirm("Видалити пункт чек-листа?")) return;
+        state.items.splice(index, 1);
+        save();
+        refresh();
+      }));
       card.querySelector(".reset")?.addEventListener("click", () => {
         if (confirm("Скинути галочки у цьому розділі?")) {
-          boxes.forEach(box => box.checked = false);
+          state.items.forEach(item => { item.checked = false; });
           save();
+          refresh();
         }
       });
       function save() {
-        localStorage.setItem(key, JSON.stringify(boxes.map(box => box.checked)));
-        touchSync("checklists", key);
+        saveChecklistState(list, state);
         update();
       }
       function update() {
-        const done = boxes.filter(box => box.checked).length;
-        const total = boxes.length;
+        const done = state.items.filter(item => item.checked).length;
+        const total = state.items.length;
         const pct = total ? Math.round(done / total * 100) : 0;
         card.querySelector(".bar").style.width = `${pct}%`;
         card.querySelector(".doneText").textContent = `Виконано: ${done} з ${total} (${pct}%)`;
@@ -1147,7 +1213,7 @@
 
     function openFileForm(store, ownerId, withKind) {
       modalContent.innerHTML = `
-        <h2>Додати файл</h2>
+        <h2>Додати PDF / фото / QR</h2>
         <div class="form-grid">
           ${withKind ? selectField("Тип файлу", "fileKind", attachmentKinds, "квиток") : ""}
           <div class="field"><label for="fileInput">Файл / зображення / PDF</label><input id="fileInput" type="file" accept="image/*,.pdf"></div>
@@ -1204,27 +1270,36 @@
       const input = document.getElementById("fileInput");
       const file = input.files?.[0];
       if (!file) { alert("Оберіть файл."); return; }
-      if (storeName === "attachments") {
-        const uploaded = await trySaveTicketFileToSupabase(ownerId, file);
-        if (uploaded) {
+      const id = generateId();
+      const kind = document.getElementById("fileKind")?.value || "";
+      const uploaded = await trySaveTicketFileToSupabase(ownerId, file, { id, kind });
+      if (uploaded) {
+        await dbPut(storeName, {
+          id,
+          ownerId,
+          cloudId: id,
+          kind,
+          blob: file,
+          filename: file.name,
+          mimeType: file.type || "application/octet-stream",
+          createdAt: new Date().toISOString()
+        });
           closeModal();
           await renderAllAttachments();
           return;
-        }
       }
       await dbPut(storeName, {
-        id: generateId(),
+        id,
         ownerId,
-        kind: document.getElementById("fileKind")?.value || "",
+        kind,
         blob: file,
         filename: file.name,
         mimeType: file.type || "application/octet-stream",
         createdAt: new Date().toISOString()
       });
-      if (storeName === "attachments") {
-        setSyncStatus("Файл збережено локально. Для синхронізації підключіть Supabase.");
-        addSyncLog("локальний файл", file.name);
-      }
+      setSyncStatus("Файл збережено локально");
+      addSyncLog("локальний файл", file.name);
+      scheduleAutosync();
       closeModal();
       renderAllAttachments();
     }
@@ -1233,19 +1308,19 @@
       return String(value || "file").normalize("NFKD").replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80) || "file";
     }
 
-    async function trySaveTicketFileToSupabase(ticketId, file) {
-      const setup = getOptionalSupabaseClient();
-      if (!setup) return false;
+    async function trySaveTicketFileToSupabase(ticketId, file, options = {}) {
+      const setup = options.client && options.tripCode ? { client: options.client, tripCode: options.tripCode } : getOptionalSupabaseClient();
+      if (!setup || !navigator.onLine) return false;
       try {
         setSyncStatus("Синхронізація...");
         const { client, tripCode } = setup;
         await upsertTrip(client, tripCode);
-        const id = generateId();
+        const id = options.id || generateId();
         const storagePath = `${safePathPart(tripCode)}/tickets/${safePathPart(ticketId)}/${id}_${safePathPart(file.name)}`;
         const { error: uploadError } = await client.storage.from("camino-files").upload(storagePath, file, {
           cacheControl: "3600",
           contentType: file.type || "application/octet-stream",
-          upsert: false
+          upsert: true
         });
         if (uploadError) throw uploadError;
         const row = {
@@ -1267,7 +1342,7 @@
       } catch (error) {
         setSyncStatus("Помилка sync");
         addSyncLog("помилка файлу", error.message);
-        alert(`Не вдалося завантажити файл у Supabase. Файл буде збережено локально. ${error.message}`);
+        if (!options.silent) alert(`Не вдалося завантажити файл у Supabase. Файл буде збережено локально. ${error.message}`);
         return false;
       }
     }
@@ -1281,10 +1356,18 @@
     }
 
     function renderRouteDocumentBadges(routeFiles) {
+      const cloudRouteIds = new Set(getTicketFiles()
+        .filter(file => getRoutePoints().some(point => point.id === file.ticketId))
+        .map(file => file.id));
       const counts = routeFiles.reduce((map, file) => {
+        if (file.cloudId && cloudRouteIds.has(file.cloudId)) return map;
         map.set(file.ownerId, (map.get(file.ownerId) || 0) + 1);
         return map;
       }, new Map());
+      getTicketFiles().forEach(file => {
+        if (!getRoutePoints().some(point => point.id === file.ticketId)) return;
+        counts.set(file.ticketId, (counts.get(file.ticketId) || 0) + 1);
+      });
       document.querySelectorAll("[data-route-file-jump]").forEach(button => {
         const count = counts.get(button.dataset.routeFileJump) || 0;
         button.hidden = count === 0;
@@ -1316,11 +1399,12 @@
       const containers = [...document.querySelectorAll(selector)];
       if (!containers.length) return;
       const files = providedFiles || await dbAll(storeName);
-      const cloudTicketFiles = storeName === "attachments" ? getTicketFiles() : [];
+      const cloudTicketFiles = getTicketFiles();
       containers.forEach(container => {
         const ownerId = container.dataset.routeFiles || container.dataset.bookingFiles;
-        const localOwn = files.filter(file => file.ownerId === ownerId);
         const cloudOwn = cloudTicketFiles.filter(file => file.ticketId === ownerId);
+        const cloudIds = new Set(cloudOwn.map(file => file.id));
+        const localOwn = files.filter(file => file.ownerId === ownerId && !cloudIds.has(file.cloudId));
         container.innerHTML = [
           ...cloudOwn.map(file => cloudFileView(file)),
           ...localOwn.map(file => fileView(storeName, file))
@@ -1374,12 +1458,28 @@
 
     async function openCloudFile(id) {
       const file = await ensureSignedTicketFile(id);
-      if (file?.signedUrl) window.open(file.signedUrl, "_blank", "noopener");
+      if (file?.signedUrl) {
+        await cacheCloudFile(file);
+        window.open(file.signedUrl, "_blank", "noopener");
+      }
     }
 
     async function downloadCloudFile(id) {
       const file = await ensureSignedTicketFile(id);
-      if (!file?.signedUrl) return;
+      if (!file?.signedUrl) {
+        const cached = await getCachedCloudFile(id);
+        if (cached?.blob) {
+          const cachedUrl = URL.createObjectURL(cached.blob);
+          const cachedLink = document.createElement("a");
+          cachedLink.href = cachedUrl;
+          cachedLink.download = cached.filename || "camino-file";
+          document.body.appendChild(cachedLink);
+          cachedLink.click();
+          cachedLink.remove();
+        }
+        return;
+      }
+      await cacheCloudFile(file);
       const link = document.createElement("a");
       link.href = file.signedUrl;
       link.download = file.filename || "camino-file";
@@ -1395,6 +1495,8 @@
       if (file.signedUrl && new Date(file.signedUrlExpiresAt || 0).getTime() > Date.now() + 60000) return file;
       const setup = getOptionalSupabaseClient();
       if (!setup) {
+        const cached = await getCachedCloudFile(id);
+        if (cached?.blob) return { ...file, signedUrl: URL.createObjectURL(cached.blob) };
         alert("Підключіть Supabase, щоб відкрити файл з хмари.");
         return file;
       }
@@ -1409,6 +1511,42 @@
       saveTicketFiles(files.map(item => item.id === id ? file : item), { markDirty: false });
       renderAllAttachments();
       return file;
+    }
+
+    function ownerStoreForTicketFile(file) {
+      return getRoutePoints().some(point => point.id === file.ticketId) ? "routeAttachments" : "attachments";
+    }
+
+    async function getCachedCloudFile(id) {
+      const stores = ["routeAttachments", "attachments"];
+      for (const storeName of stores) {
+        const files = await dbAll(storeName);
+        const file = files.find(item => item.cloudId === id || item.id === `cloud_${id}`);
+        if (file) return file;
+      }
+      return null;
+    }
+
+    async function cacheCloudFile(file) {
+      if (!file?.signedUrl) return;
+      try {
+        const response = await fetch(file.signedUrl);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const blob = await response.blob();
+        await dbPut(ownerStoreForTicketFile(file), {
+          id: `cloud_${file.id}`,
+          ownerId: file.ticketId,
+          cloudId: file.id,
+          kind: "Supabase",
+          blob,
+          filename: file.filename,
+          mimeType: file.mimeType || blob.type || "application/octet-stream",
+          createdAt: file.createdAt || nowISO()
+        });
+        addSyncLog("файл кешовано офлайн", file.filename);
+      } catch (error) {
+        addSyncLog("помилка кешу файлу", error.message);
+      }
     }
 
     async function deleteCloudFile(id, options = {}) {
@@ -1436,10 +1574,8 @@
     async function deleteFilesByOwner(storeName, ownerId) {
       const files = await dbAll(storeName);
       await Promise.all(files.filter(file => file.ownerId === ownerId).map(file => dbDelete(storeName, file.id)));
-      if (storeName === "attachments") {
-        const cloudFiles = getTicketFiles().filter(file => file.ticketId === ownerId);
-        for (const file of cloudFiles) await deleteCloudFile(file.id, { skipConfirm: true });
-      }
+      const cloudFiles = getTicketFiles().filter(file => file.ticketId === ownerId);
+      for (const file of cloudFiles) await deleteCloudFile(file.id, { skipConfirm: true });
       renderAllAttachments();
     }
 
@@ -1775,11 +1911,34 @@
       await cloudUpsert(client, table, rows, onConflict);
     }
 
+    async function uploadLocalFilesToCloud(client, tripCode) {
+      let uploadedCount = 0;
+      for (const storeName of ["routeAttachments", "attachments"]) {
+        const files = await dbAll(storeName);
+        for (const file of files) {
+          if (file.cloudId || !file.blob) continue;
+          const uploaded = await trySaveTicketFileToSupabase(file.ownerId, file.blob, {
+            id: file.id,
+            kind: file.kind || "",
+            client,
+            tripCode,
+            silent: true
+          });
+          if (uploaded) {
+            await dbPut(storeName, { ...file, cloudId: file.id });
+            uploadedCount += 1;
+          }
+        }
+      }
+      if (uploadedCount) addSyncLog("завантажено локальні файли", `${uploadedCount}`);
+    }
+
     async function uploadLocalToCloud() {
       try {
         setSyncStatus("синхронізація...");
         const { client, tripCode } = getSupabaseClient();
         await upsertTrip(client, tripCode);
+        await uploadLocalFilesToCloud(client, tripCode);
         await cloudReplace(client, "route_points", tripCode, getRoutePoints().map((item, index) => routeToRow(item, index, tripCode)));
         addSyncLog("записано маршрут", `${getRoutePoints().length} точок`);
         await cloudReplace(client, "tickets", tripCode, getBookings().map(item => ticketToRow(item, tripCode)));
@@ -1832,6 +1991,7 @@
         setSyncStatus("Синхронізація...");
         const { client, tripCode } = getSupabaseClient();
         await upsertTrip(client, tripCode);
+        await uploadLocalFilesToCloud(client, tripCode);
 
         const cloudRoutes = await cloudSelect(client, "route_points", tripCode);
         const localRoutes = getRoutePoints();
@@ -1940,7 +2100,7 @@
       return Object.values(checklists).map(list => {
         const updated_at = getLocalUpdated("checklists", list.storage) === "1970-01-01T00:00:00.000Z" ? nowISO() : getLocalUpdated("checklists", list.storage);
         setLocalUpdated("checklists", list.storage, updated_at);
-        return { trip_code: tripCode, list_key: list.storage, state: readJSON(list.storage, []), updated_at };
+        return { trip_code: tripCode, list_key: list.storage, state: getChecklistState(list), updated_at };
       });
     }
 

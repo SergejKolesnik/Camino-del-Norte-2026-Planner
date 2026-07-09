@@ -1,4 +1,4 @@
-const CACHE_NAME = "camino-del-norte-2026-v10-linked-timeline-tickets";
+const CACHE_NAME = "camino-del-norte-2026-v11-document-sync";
 const APP_SHELL = [
   "./",
   "./index.html",
