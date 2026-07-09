@@ -437,6 +437,10 @@
     const statuses = ["заплановано", "куплено", "підтверджено", "виконано"];
     const bookingTypes = ["квиток", "готель", "страховка", "інше"];
     const attachmentKinds = ["квиток", "QR", "бронювання", "скрін карти", "інше"];
+    const ticketLikePointTypes = new Set([
+      "flight", "train", "bus", "ferry", "hotel", "booking", "ticket", "transfer",
+      "літак", "поїзд", "автобус", "пором", "паром", "готель", "бронювання", "квиток", "трансфер"
+    ]);
 
     const defaultRoutePoints = [
       point("2026-07-25", "", "поїзд", "Дніпро", "Хелм", "", "Вокзал Дніпро / Chełm", "Перший великий переїзд у бік Польщі.", "", "заплановано"),
@@ -645,6 +649,15 @@
       refresh();
     }
 
+    function isTicketLikePoint(point) {
+      return ticketLikePointTypes.has(String(point.type || "").trim().toLowerCase());
+    }
+
+    function getTicketLikePoints(points, bookings) {
+      const linkedPointIds = new Set(bookings.map(item => item.routePointId).filter(Boolean));
+      return points.filter(point => isTicketLikePoint(point) && !linkedPointIds.has(point.id));
+    }
+
     function todayISO() {
       const now = new Date();
       return new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString().slice(0, 10);
@@ -736,6 +749,11 @@
     function renderBookings() {
       const bookings = getBookings();
       const points = getRoutePoints();
+      const ticketPoints = getTicketLikePoints(points, bookings);
+      const items = bookings
+        .map(item => ({ kind: "booking", item }))
+        .concat(ticketPoints.map(item => ({ kind: "point", item })))
+        .sort((a, b) => sortPoints(a.item, b.item));
       return `
         <section class="screen" id="screen-bookings">
           <div class="card">
@@ -745,7 +763,7 @@
             <div class="actions"><button class="btn" type="button" onclick="openBookingForm()">Додати запис</button></div>
           </div>
           <div class="timeline">
-            ${bookings.length ? bookings.map(item => bookingCard(item, points)).join("") : `<div class="empty">Ще немає квитків або бронювань.</div>`}
+            ${items.length ? items.map(entry => entry.kind === "booking" ? bookingCard(entry.item, points) : ticketPointCard(entry.item)).join("") : `<div class="empty">Ще немає квитків або бронювань.</div>`}
           </div>
         </section>
       `;
@@ -769,6 +787,29 @@
             <button class="btn ghost" type="button" onclick="openBookingForm('${item.id}')">Редагувати</button>
             <button class="btn ghost" type="button" onclick="openBookingFileForm('${item.id}')">Додати файл</button>
             <button class="btn danger" type="button" onclick="deleteBooking('${item.id}')">Видалити</button>
+          </div>
+        </article>
+      `;
+    }
+
+    function ticketPointCard(item) {
+      return `
+        <article class="point">
+          <div class="point-top">
+            <div>
+              <div class="point-title">${escapeHtml(item.title || `${item.from} → ${item.to}`)}</div>
+              <div class="point-meta">${escapeHtml(item.date || "без дати")} ${escapeHtml(item.time || "")} · ${escapeHtml(item.type || "квиток")}</div>
+            </div>
+            <span class="chip">${escapeHtml(item.status || "заплановано")}</span>
+          </div>
+          <p class="point-note"><b>Точка:</b> ${escapeHtml(item.from)} → ${escapeHtml(item.to)}</p>
+          ${item.address ? `<p class="point-note"><b>Адреса:</b> ${escapeHtml(item.address)}</p>` : ""}
+          ${item.note ? `<p class="point-note">${escapeHtml(item.note)}</p>` : ""}
+          ${item.mapsUrl ? `<p><a href="${escapeHtml(item.mapsUrl)}" target="_blank" rel="noopener">Google Maps</a></p>` : ""}
+          <div class="attachments" data-route-files="${item.id}"></div>
+          <div class="actions">
+            <button class="btn ghost" type="button" onclick="openPointForm('${item.id}')">Редагувати точку</button>
+            <button class="btn ghost" type="button" onclick="openRouteFileForm('${item.id}')">Додати файл</button>
           </div>
         </article>
       `;
