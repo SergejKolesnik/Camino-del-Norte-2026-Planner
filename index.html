@@ -107,6 +107,14 @@
     .chip.sun { background: #fff0df; color: #884b1f; }
     .chip.green { background: #eaf7ef; color: #216040; }
     .chip.red { background: #fff0ef; color: #8f4039; }
+    button.chip {
+      border: 0;
+      cursor: pointer;
+      font: inherit;
+      font-weight: 850;
+    }
+    .doc-jump { background: #fff7d7; color: #76520f; }
+    .doc-jump[hidden] { display: none; }
 
     .offline-chip {
       display: inline-flex;
@@ -216,6 +224,12 @@
       border: 1px solid var(--line);
       border-radius: 18px;
       background: rgba(255,255,255,.68);
+      transition: box-shadow .25s ease, border-color .25s ease, background .25s ease;
+    }
+    .point.highlight {
+      border-color: #f3b84d;
+      background: #fff9e8;
+      box-shadow: 0 0 0 4px rgba(243, 184, 77, .22);
     }
     .point-top {
       display: grid;
@@ -718,13 +732,16 @@
 
     function pointCard(item, index, total) {
       return `
-        <article class="point">
+        <article class="point" data-timeline-route-point="${item.id}">
           <div class="point-top">
             <div>
               <div class="point-title">${escapeHtml(item.from)} → ${escapeHtml(item.to)}</div>
               <div class="point-meta">${escapeHtml(item.date || "без дати")} ${escapeHtml(item.time || "")}</div>
             </div>
-            <span class="chip ${item.status === "виконано" ? "green" : item.status === "куплено" ? "sun" : ""}">${escapeHtml(item.status)}</span>
+            <div class="mini-actions">
+              <button class="chip doc-jump" type="button" data-route-file-jump="${item.id}" onclick="openTicketsForRoutePoint('${item.id}')" title="Відкрити документи у квитках" hidden></button>
+              <span class="chip ${item.status === "виконано" ? "green" : item.status === "куплено" ? "sun" : ""}">${escapeHtml(item.status)}</span>
+            </div>
           </div>
           <div>
             <span class="chip">${escapeHtml(item.type)}</span>
@@ -772,7 +789,7 @@
     function bookingCard(item, points) {
       const point = points.find(p => p.id === item.routePointId);
       return `
-        <article class="point">
+        <article class="point" ${point ? `data-ticket-route-point="${point.id}"` : ""}>
           <div class="point-top">
             <div>
               <div class="point-title">${escapeHtml(item.name || "Без назви")}</div>
@@ -784,6 +801,7 @@
           ${item.note ? `<p class="point-note">${escapeHtml(item.note)}</p>` : ""}
           <div class="attachments" data-booking-files="${item.id}"></div>
           <div class="actions">
+            ${point ? `<button class="btn ghost" type="button" onclick="openTimelineForRoutePoint('${point.id}')">Відкрити у таймлайні</button>` : ""}
             <button class="btn ghost" type="button" onclick="openBookingForm('${item.id}')">Редагувати</button>
             <button class="btn ghost" type="button" onclick="openBookingFileForm('${item.id}')">Додати файл</button>
             <button class="btn danger" type="button" onclick="deleteBooking('${item.id}')">Видалити</button>
@@ -794,7 +812,7 @@
 
     function ticketPointCard(item) {
       return `
-        <article class="point">
+        <article class="point" data-ticket-route-point="${item.id}">
           <div class="point-top">
             <div>
               <div class="point-title">${escapeHtml(item.title || `${item.from} → ${item.to}`)}</div>
@@ -808,6 +826,7 @@
           ${item.mapsUrl ? `<p><a href="${escapeHtml(item.mapsUrl)}" target="_blank" rel="noopener">Google Maps</a></p>` : ""}
           <div class="attachments" data-route-files="${item.id}"></div>
           <div class="actions">
+            <button class="btn ghost" type="button" onclick="openTimelineForRoutePoint('${item.id}')">Відкрити у таймлайні</button>
             <button class="btn ghost" type="button" onclick="openPointForm('${item.id}')">Редагувати точку</button>
             <button class="btn ghost" type="button" onclick="openRouteFileForm('${item.id}')">Додати файл</button>
           </div>
@@ -952,12 +971,37 @@
       renderAllAttachments();
     }
 
-    function activateScreen(id) {
+    function activateScreen(id, options = {}) {
       document.querySelectorAll(".screen").forEach(screen => screen.classList.toggle("active", screen.id === `screen-${id}`));
       document.querySelectorAll(".nav-btn").forEach(button => button.classList.toggle("active", button.dataset.target === id));
       document.querySelector(`.nav-btn[data-target="${id}"]`)?.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
-      window.scrollTo({ top: 0, behavior: "smooth" });
+      if (options.scrollTop !== false) window.scrollTo({ top: 0, behavior: "smooth" });
       renderAllAttachments();
+    }
+
+    function findRouteLinkedCard(attribute, routePointId) {
+      return [...document.querySelectorAll(`[${attribute}]`)].find(card => card.getAttribute(attribute) === routePointId);
+    }
+
+    function scrollToLinkedCard(card) {
+      if (!card) return;
+      card.scrollIntoView({ behavior: "smooth", block: "center" });
+      card.classList.add("highlight");
+      window.setTimeout(() => card.classList.remove("highlight"), 2800);
+    }
+
+    function openTicketsForRoutePoint(routePointId) {
+      activateScreen("bookings", { scrollTop: false });
+      window.requestAnimationFrame(() => {
+        scrollToLinkedCard(findRouteLinkedCard("data-ticket-route-point", routePointId));
+      });
+    }
+
+    function openTimelineForRoutePoint(routePointId) {
+      activateScreen("timeline", { scrollTop: false });
+      window.requestAnimationFrame(() => {
+        scrollToLinkedCard(findRouteLinkedCard("data-timeline-route-point", routePointId));
+      });
     }
 
     function initChecklist(card) {
@@ -1230,8 +1274,25 @@
 
     async function renderAllAttachments() {
       await refreshTicketFileSignedUrls();
-      await renderFiles("routeAttachments", "[data-route-files]");
+      const routeFiles = await dbAll("routeAttachments");
+      renderRouteDocumentBadges(routeFiles);
+      await renderFiles("routeAttachments", "[data-route-files]", routeFiles);
       await renderFiles("attachments", "[data-booking-files]");
+    }
+
+    function renderRouteDocumentBadges(routeFiles) {
+      const counts = routeFiles.reduce((map, file) => {
+        map.set(file.ownerId, (map.get(file.ownerId) || 0) + 1);
+        return map;
+      }, new Map());
+      document.querySelectorAll("[data-route-file-jump]").forEach(button => {
+        const count = counts.get(button.dataset.routeFileJump) || 0;
+        button.hidden = count === 0;
+        if (count > 0) {
+          button.textContent = `📎 ${count}`;
+          button.setAttribute("aria-label", `Відкрити документи: ${count}`);
+        }
+      });
     }
 
     async function refreshTicketFileSignedUrls() {
@@ -1251,10 +1312,10 @@
       if (refreshed.size) saveTicketFiles(files.map(file => refreshed.get(file.id) || file), { markDirty: false });
     }
 
-    async function renderFiles(storeName, selector) {
+    async function renderFiles(storeName, selector, providedFiles = null) {
       const containers = [...document.querySelectorAll(selector)];
       if (!containers.length) return;
-      const files = await dbAll(storeName);
+      const files = providedFiles || await dbAll(storeName);
       const cloudTicketFiles = storeName === "attachments" ? getTicketFiles() : [];
       containers.forEach(container => {
         const ownerId = container.dataset.routeFiles || container.dataset.bookingFiles;
