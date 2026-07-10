@@ -1,4 +1,4 @@
-const CACHE_NAME = "camino-del-norte-2026-v12-sync-diagnostics";
+const CACHE_NAME = "camino-del-norte-2026-v13-cloud-download-merge";
 const APP_SHELL = [
   "./",
   "./index.html",
