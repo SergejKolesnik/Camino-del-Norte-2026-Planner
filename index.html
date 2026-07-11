@@ -732,6 +732,43 @@
       refresh();
     }
 
+    function mergeRouteDuplicate(base, duplicate) {
+      const merged = { ...base };
+      ["date", "time", "type", "from", "to", "title", "address", "note", "mapsUrl", "status"].forEach(key => {
+        if (!merged[key] && duplicate[key]) merged[key] = duplicate[key];
+      });
+      return merged;
+    }
+
+    function dedupeRoutePoints(options = {}) {
+      const points = Array.isArray(options.points) ? options.points : getRoutePoints();
+      const byId = new Map();
+      const deduped = [];
+      let removed = 0;
+      points.forEach(point => {
+        const id = String(point?.id || "");
+        if (!id) {
+          deduped.push(point);
+          return;
+        }
+        if (!byId.has(id)) {
+          byId.set(id, deduped.length);
+          deduped.push(point);
+          return;
+        }
+        const index = byId.get(id);
+        deduped[index] = mergeRouteDuplicate(deduped[index], point);
+        removed += 1;
+      });
+      if (!options.preview && removed > 0) {
+        localStorage.setItem(ROUTE_KEY, JSON.stringify(deduped));
+        if (options.markDirty) touchMany("route_points", deduped.map(item => item.id));
+      }
+      if (options.log !== false) addSyncLog("duplicates removed", `${removed}`);
+      if (options.refreshView && removed > 0) refresh();
+      return { items: deduped, removed };
+    }
+
     function getBookings() { return readJSON(BOOKINGS_KEY, []); }
     function saveBookings(items, options = {}) {
       localStorage.setItem(BOOKINGS_KEY, JSON.stringify(items));
@@ -1092,6 +1129,7 @@
               <button class="btn ghost" type="button" onclick="runSupabaseDiagnostics()">Діагностика Supabase</button>
               <button class="btn ghost" type="button" onclick="createSyncTestRecord()">Тестовий запис</button>
               <button class="btn secondary" type="button" onclick="forceDownloadFromSupabase()">Примусово завантажити з Supabase</button>
+              <button class="btn secondary" type="button" onclick="dedupeRoutePoints({ refreshView: true, markDirty: true })">🧹 Remove duplicate route points</button>
               <button class="btn danger" type="button" onclick="clearLocalAndRestoreFromSupabase()">Очистити локальні дані та відновити з Supabase</button>
             </div>
             <div id="syncDiagnostics" class="grid"></div>
@@ -2378,7 +2416,9 @@
         const { client, tripCode } = getSupabaseClient();
         await upsertTrip(client, tripCode);
         const storageUploaded = await uploadLocalFilesToCloud(client, tripCode);
-        const routeRows = getRoutePoints().map((item, index) => routeToRow(item, index, tripCode));
+        const routeDedupe = dedupeRoutePoints({ points: getRoutePoints(), preview: true });
+        localStorage.setItem(ROUTE_KEY, JSON.stringify(routeDedupe.items));
+        const routeRows = routeDedupe.items.map((item, index) => routeToRow(item, index, tripCode));
         const ticketRows = getBookings().map(item => ticketToRow(item, tripCode));
         const fileRows = getTicketFiles().map(item => ticketFileToRow(item, tripCode));
         await cloudReplace(client, "route_points", tripCode, routeRows);
@@ -2411,10 +2451,11 @@
           cloudSelect(client, "expenses", tripCode)
         ]);
         const routeMerge = mergeCloudRows(getRoutePoints(), routes.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)), rowToRoute);
+        const routeDedupe = dedupeRoutePoints({ points: routeMerge.items, preview: true });
         const ticketMerge = mergeCloudRows(getBookings(), tickets, rowToTicket);
         const expenseMerge = mergeCloudRows(getExpenses(), expenses, rowToExpense);
         const fileMerge = mergeCloudRows(getTicketFiles(), ticketFiles, rowToTicketFile);
-        localStorage.setItem(ROUTE_KEY, JSON.stringify(routeMerge.items));
+        localStorage.setItem(ROUTE_KEY, JSON.stringify(routeDedupe.items));
         localStorage.setItem(BOOKINGS_KEY, JSON.stringify(ticketMerge.items));
         saveTicketFiles(await hydrateAndCacheTicketFiles(client, fileMerge.items), { markDirty: false });
         localStorage.setItem("camino2026_expenses", JSON.stringify(expenseMerge.items));
@@ -2427,7 +2468,7 @@
         addSyncLog("cloud route_points received", `${routes.length}`);
         addSyncLog("cloud tickets received", `${tickets.length}`);
         addSyncLog("cloud ticket_files received", `${ticketFiles.length}`);
-        addSyncLog("local route_points after merge", `${routeMerge.items.length}`);
+        addSyncLog("local route_points after merge", `${routeDedupe.items.length}`);
         addSyncLog("local tickets after merge", `${ticketMerge.items.length}`);
         addSyncLog("local file metadata after merge", `${fileMerge.items.length}`);
         addSyncLog("downloaded route_points", `${routes.length} (${routeMerge.added} added, ${routeMerge.updated} updated)`);
@@ -2510,10 +2551,11 @@
         const fileBase = options.replaceLocal ? [] : getTicketFiles();
         const expenseBase = options.replaceLocal ? [] : getExpenses();
         const routeMerge = mergeCloudRows(routeBase, routes.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)), rowToRoute);
+        const routeDedupe = dedupeRoutePoints({ points: routeMerge.items, preview: true });
         const ticketMerge = mergeCloudRows(ticketBase, tickets, rowToTicket);
         const fileMerge = mergeCloudRows(fileBase, ticketFiles, rowToTicketFile);
         const expenseMerge = mergeCloudRows(expenseBase, expenses, rowToExpense);
-        localStorage.setItem(ROUTE_KEY, JSON.stringify(routeMerge.items));
+        localStorage.setItem(ROUTE_KEY, JSON.stringify(routeDedupe.items));
         localStorage.setItem(BOOKINGS_KEY, JSON.stringify(ticketMerge.items));
         saveTicketFiles(await hydrateAndCacheTicketFiles(client, fileMerge.items), { markDirty: false });
         localStorage.setItem("camino2026_expenses", JSON.stringify(expenseMerge.items));
@@ -2530,7 +2572,7 @@
         addSyncLog("cloud route_points received", `${routes.length}`);
         addSyncLog("cloud tickets received", `${tickets.length}`);
         addSyncLog("cloud ticket_files received", `${ticketFiles.length}`);
-        addSyncLog("local route_points after merge", `${routeMerge.items.length}`);
+        addSyncLog("local route_points after merge", `${routeDedupe.items.length}`);
         addSyncLog("local tickets after merge", `${ticketMerge.items.length}`);
         addSyncLog("local file metadata after merge", `${fileMerge.items.length}`);
         addSyncLog("downloaded route_points", `${routes.length} (${routeMerge.added} added, ${routeMerge.updated} updated)`);
@@ -2540,7 +2582,7 @@
         addSyncLog("downloaded expenses", `${expenses.length} (${expenseMerge.added} added, ${expenseMerge.updated} updated)`);
         const reportHtml = `
           <div class="soft small"><strong>Force Download OK:</strong></div>
-          <div class="soft small">route_points: ${routes.length} (${routeMerge.added} added, ${routeMerge.updated} updated)</div>
+          <div class="soft small">route_points: ${routes.length} (${routeMerge.added} added, ${routeMerge.updated} updated, ${routeDedupe.removed} duplicates removed)</div>
           <div class="soft small">tickets: ${tickets.length} (${ticketMerge.added} added, ${ticketMerge.updated} updated)</div>
           <div class="soft small">ticket_files: ${ticketFiles.length} (${fileMerge.added} added, ${fileMerge.updated} updated)</div>
           <div class="soft small">checklists: ${checklistsRows.length}, notes: ${notesResult.data ? 1 : 0}, expenses: ${expenses.length}</div>
@@ -2572,9 +2614,11 @@
         const storageUploaded = await uploadLocalFilesToCloud(client, tripCode);
 
         const cloudRoutes = await cloudSelect(client, "route_points", tripCode);
-        const localRoutes = getRoutePoints();
+        const localRouteDedupe = dedupeRoutePoints({ points: getRoutePoints(), preview: true, log: false });
+        const localRoutes = localRouteDedupe.items;
         const routeResult = mergeByUpdatedAt(localRoutes, cloudRoutes, "route_points", rowToRoute, (item, index) => routeToRow(item, index, tripCode));
-        localStorage.setItem(ROUTE_KEY, JSON.stringify(routeResult.local));
+        const routeDedupe = dedupeRoutePoints({ points: routeResult.local, preview: true });
+        localStorage.setItem(ROUTE_KEY, JSON.stringify(routeDedupe.items));
         await cloudUpsert(client, "route_points", routeResult.pushRows);
         addSyncLog("uploaded route_points", `${routeResult.pushRows.length}`);
         addSyncLog("downloaded route_points", `${cloudRoutes.length}`);
@@ -2624,7 +2668,7 @@
         await syncChecklists(client, tripCode);
         localStorage.setItem(SYNC_LAST_TRIP_KEY, tripCode);
         setSyncStatus(syncedNowLabel());
-        addSyncLog("local route_points after merge", `${routeResult.local.length}`);
+        addSyncLog("local route_points after merge", `${routeDedupe.items.length}`);
         addSyncLog("local tickets after merge", `${ticketResult.local.length}`);
         addSyncLog("local file metadata after merge", `${mergedFiles.length}`);
         addSyncLog(options.silent ? "autosync" : "синхронізовано", "lastUpdated wins");
