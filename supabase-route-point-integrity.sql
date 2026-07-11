@@ -5,7 +5,7 @@
 -- Canonical trip_code expression used in every duplicate_key:
 -- case when rp.trip_code = 'camino2026' then 'camino-2026' else rp.trip_code end
 
--- 1) PREVIEW: exact duplicate groups that are safe candidates for automatic cleanup.
+-- PREVIEW 1: exact duplicate groups that are safe candidates for automatic cleanup.
 with enriched as (
   select
     rp.*,
@@ -74,7 +74,7 @@ join enriched e using (duplicate_key)
 group by g.duplicate_key, g.duplicate_count, g.rows_with_files, g.rows_with_tickets, g.distinct_notes, g.time_norm
 order by g.duplicate_count desc, g.duplicate_key;
 
--- 2) PREVIEW: possible duplicates that require manual review and are NOT cleaned automatically.
+-- PREVIEW 2: possible duplicates that require manual review and are NOT cleaned automatically.
 with enriched as (
   select
     rp.*,
@@ -112,7 +112,7 @@ where g.rows_with_files > 1
    or (g.time_norm = '' and g.distinct_notes > 1)
 order by e.duplicate_key, e.updated_at desc;
 
--- 3) SCHEMA AUDIT: test cleanup uses real data markers, not generated ids.
+-- SCHEMA AUDIT: test cleanup uses real data markers, not generated ids.
 select table_name, column_name, data_type
 from information_schema.columns
 where table_schema = 'public'
@@ -120,7 +120,7 @@ where table_schema = 'public'
   and column_name in ('id', 'type', 'title', 'from_place', 'to_place', 'note', 'booking_number', 'related_point_id', 'ticket_id', 'is_test')
 order by table_name, ordinal_position;
 
--- 4) PREVIEW: old test route points.
+-- PREVIEW 3: old test route points.
 select id, trip_code, date, time, title, from_place, to_place, note
 from public.route_points
 where title like 'SYNC_TEST_%'
@@ -129,14 +129,14 @@ where title like 'SYNC_TEST_%'
    or note = 'Diagnostic test route point'
 order by date, time, created_at;
 
--- 5) CONTROL BEFORE TRANSACTION: route point counts by trip_code.
+-- CONTROL BEFORE TRANSACTION: route point counts by trip_code.
 select trip_code, count(*) as route_points_count
 from public.route_points
 where trip_code in ('camino-2026', 'camino2026')
 group by trip_code
 order by trip_code;
 
--- 6) CONTROL BEFORE TRANSACTION: old test route point count.
+-- CONTROL BEFORE TRANSACTION: old test route point count.
 select count(*) as test_route_points_before
 from public.route_points
 where title like 'SYNC_TEST_%'
@@ -144,10 +144,11 @@ where title like 'SYNC_TEST_%'
    or to_place = 'Camino PWA'
    or note = 'Diagnostic test route point';
 
--- 7) DRY RUN: build route_point_duplicate_map and show planned remaps. No DELETE.
+-- DRY RUN: build route_point_duplicate_map and show planned remaps. No DELETE.
 begin;
 
-create temporary table route_point_duplicate_map_dry_run on commit drop as
+drop table if exists route_point_duplicate_map_dry_run;
+create temporary table route_point_duplicate_map_dry_run as
 with enriched as (
   select
     rp.*,
@@ -257,10 +258,11 @@ order by dry_run_action, rp.created_at;
 
 rollback;
 
--- 8) TRANSACTION: collect maps, relink, verify, then delete route_points.
+-- TRANSACTION: collect maps, relink, verify, then delete route_points.
 begin;
 
-create temporary table route_point_duplicate_map on commit drop as
+drop table if exists route_point_duplicate_map;
+create temporary table route_point_duplicate_map as
 with enriched as (
   select
     rp.*,
@@ -322,7 +324,8 @@ select id as duplicate_id, canonical_id
 from ranked
 where rn > 1;
 
-create temporary table route_point_test_map on commit drop as
+drop table if exists route_point_test_map;
+create temporary table route_point_test_map as
 select
   rp.id as test_route_point_id,
   dm.canonical_id,
@@ -347,7 +350,8 @@ where rp.title like 'SYNC_TEST_%'
    or rp.to_place = 'Camino PWA'
    or rp.note = 'Diagnostic test route point';
 
-create temporary table route_point_relink_map on commit drop as
+drop table if exists route_point_relink_map;
+create temporary table route_point_relink_map as
 select duplicate_id as source_id, canonical_id
 from route_point_duplicate_map
 where canonical_id is not null
@@ -356,7 +360,8 @@ select test_route_point_id as source_id, canonical_id
 from route_point_test_map
 where canonical_id is not null;
 
-create temporary table ticket_files_relinked_summary on commit drop as
+drop table if exists ticket_files_relinked_summary;
+create temporary table ticket_files_relinked_summary as
 with updated as (
   update public.ticket_files tf
   set ticket_id = m.canonical_id,
@@ -368,7 +373,8 @@ with updated as (
 )
 select count(*) as ticket_files_relinked from updated;
 
-create temporary table tickets_relinked_summary on commit drop as
+drop table if exists tickets_relinked_summary;
+create temporary table tickets_relinked_summary as
 with updated as (
   update public.tickets t
   set related_point_id = m.canonical_id,
@@ -421,7 +427,8 @@ set state = case
   end,
   updated_at = greatest(public.checklists.updated_at, excluded.updated_at);
 
-create temporary table route_points_deleted_summary on commit drop as
+drop table if exists route_points_deleted_summary;
+create temporary table route_points_deleted_summary as
 with deleted as (
   delete from public.route_points rp
   using route_point_duplicate_map m
@@ -431,7 +438,8 @@ with deleted as (
 )
 select count(*) as route_points_deleted from deleted;
 
-create temporary table test_records_deleted_summary on commit drop as
+drop table if exists test_records_deleted_summary;
+create temporary table test_records_deleted_summary as
 with deleted as (
   delete from public.route_points rp
   using route_point_test_map tm
@@ -456,14 +464,14 @@ order by test_route_point_id;
 
 commit;
 
--- 9) CONTROL AFTER TRANSACTION: route point counts by trip_code.
+-- CONTROL AFTER TRANSACTION: route point counts by trip_code.
 select trip_code, count(*) as route_points_count
 from public.route_points
 where trip_code in ('camino-2026', 'camino2026')
 group by trip_code
 order by trip_code;
 
--- 10) CONTROL AFTER TRANSACTION: old test route point count.
+-- CONTROL AFTER TRANSACTION: old test route point count.
 select count(*) as test_route_points_after
 from public.route_points
 where title like 'SYNC_TEST_%'
@@ -471,7 +479,7 @@ where title like 'SYNC_TEST_%'
    or to_place = 'Camino PWA'
    or note = 'Diagnostic test route point';
 
--- 11) VERIFY: should stay stable after repeated app Download/Sync.
+-- VERIFY: should stay stable after repeated app Download/Sync.
 select count(*) as route_points_after_cleanup
 from public.route_points
 where trip_code = 'camino-2026';
