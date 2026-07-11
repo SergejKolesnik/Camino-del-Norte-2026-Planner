@@ -433,10 +433,13 @@
     const SYNC_META_KEY = "camino2026_sync_meta";
     const SYNC_STATUS_KEY = "camino2026_sync_status";
     const SYNC_LOG_KEY = "camino2026_sync_log";
+    const SYNC_SETTINGS_KEY = "camino2026_sync_settings";
     const TICKET_FILES_KEY = "camino2026_ticket_files";
     const AUTOSYNC_DELAY = 2500;
     let autosyncTimer = null;
     let isSyncing = false;
+    let pendingSync = false;
+    let periodicSyncTimer = null;
     const EXPORT_VERSION = 2;
     const types = ["поїзд", "літак", "автобус", "пором", "трансфер", "бронювання", "квиток", "авто", "пішки", "готель", "інше", "train", "flight", "bus", "ferry", "hotel", "booking", "ticket", "transfer"];
     const statuses = ["заплановано", "куплено", "підтверджено", "виконано"];
@@ -564,6 +567,12 @@
       if (status) status.textContent = value;
       const compact = document.getElementById("syncCompactStatus");
       if (compact) compact.textContent = value;
+      const top = document.getElementById("offlineStatus");
+      if (top) top.textContent = value;
+    }
+
+    function syncedNowLabel() {
+      return `Синхронізовано о ${new Date().toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit" })}`;
     }
 
     function getSyncLog() {
@@ -588,6 +597,15 @@
       return readJSON(SYNC_CONFIG_KEY, { url: "", anonKey: "", tripCode: "camino-2026" });
     }
 
+    function getSyncSettings() {
+      return readJSON(SYNC_SETTINGS_KEY, { autosync: true, intervalMinutes: 5, syncOnOpen: true });
+    }
+
+    function saveSyncSettings(settings) {
+      localStorage.setItem(SYNC_SETTINGS_KEY, JSON.stringify(settings));
+      setupPeriodicSync();
+    }
+
     function getTicketFiles() {
       return readJSON(TICKET_FILES_KEY, []);
     }
@@ -608,6 +626,7 @@
     }
 
     function scheduleAutosync() {
+      if (!getSyncSettings().autosync) return;
       clearTimeout(autosyncTimer);
       autosyncTimer = setTimeout(() => {
         autosyncTimer = null;
@@ -616,7 +635,10 @@
     }
 
     async function autosyncNow() {
-      if (isSyncing) return;
+      if (isSyncing) {
+        pendingSync = true;
+        return;
+      }
       const config = getSyncConfig();
       if (!config.url || !config.anonKey || !config.tripCode || !window.supabase) {
         setSyncStatus("Є локальні зміни");
@@ -625,9 +647,27 @@
       try {
         await syncNow({ silent: true });
       } catch (error) {
-        setSyncStatus("Помилка sync");
+        setSyncStatus("Помилка синхронізації");
         addSyncLog("помилка autosync", error.message);
       }
+    }
+
+    function setupPeriodicSync() {
+      clearInterval(periodicSyncTimer);
+      const settings = getSyncSettings();
+      if (!settings.autosync) return;
+      periodicSyncTimer = setInterval(() => {
+        if (!document.hidden) autosyncNow();
+      }, Number(settings.intervalMinutes || 5) * 60 * 1000);
+    }
+
+    function initAutosync() {
+      setupPeriodicSync();
+      window.addEventListener("online", () => autosyncNow());
+      document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) autosyncNow();
+      });
+      if (getSyncSettings().syncOnOpen) setTimeout(() => autosyncNow(), 1200);
     }
 
     function getRoutePoints() {
@@ -685,8 +725,30 @@
       const linkedPointIds = new Set(bookings.map(item => item.routePointId).filter(Boolean));
       return getRoutePoints()
         .filter(point => isTicketLikeType(point.type))
+        .filter(point => !isEmptyRouteTicketPoint(point))
         .filter(point => !linkedPointIds.has(point.id))
         .sort(sortPoints);
+    }
+
+    function ownerHasCloudFiles(ownerId) {
+      return getTicketFiles().some(file => file.ticketId === ownerId);
+    }
+
+    function isEmptyBooking(item) {
+      return ![
+        item.name,
+        item.date,
+        item.bookingNumber,
+        item.note,
+        item.routePointId
+      ].some(Boolean) && !ownerHasCloudFiles(item.id);
+    }
+
+    function isEmptyRouteTicketPoint(item) {
+      const hasNameOrRoute = Boolean(item.title || item.from || item.to || item.address);
+      const hasDateOrTime = Boolean(item.date || item.time);
+      const hasNote = Boolean(item.note);
+      return !hasNameOrRoute && !hasDateOrTime && !hasNote && !ownerHasCloudFiles(item.id);
     }
 
     function renderToday() {
@@ -804,8 +866,8 @@
           <div class="attachments" data-booking-files="${item.id}"></div>
           <div class="actions">
             <button class="btn ghost" type="button" onclick="openBookingForm('${item.id}')">Редагувати</button>
-            <button class="btn ghost" type="button" onclick="openBookingFileForm('${item.id}')">Додати файл</button>
-            <button class="btn danger" type="button" onclick="deleteBooking('${item.id}')">Видалити</button>
+            <button class="btn ghost" type="button" onclick="openBookingFileForm('${item.id}')">Додати PDF / фото / QR</button>
+            <button class="btn danger" type="button" onclick="deleteBookingCard('${item.id}')">${isEmptyBooking(item) ? "Видалити" : "Видалити картку"}</button>
           </div>
         </article>
       `;
@@ -829,7 +891,9 @@
           <div class="attachments" data-route-files="${item.id}"></div>
           <div class="actions">
             <button class="btn ghost" type="button" onclick="openTimelinePoint('${item.id}')">Відкрити точку в таймлайні</button>
-            <button class="btn ghost" type="button" onclick="openRouteFileForm('${item.id}')">Додати файл / скрін квитка</button>
+            <button class="btn ghost" type="button" onclick="openRouteFileForm('${item.id}')">Додати PDF / фото / QR</button>
+            <button class="btn secondary" type="button" onclick="openPointForm('${item.id}')">Змінити тип події</button>
+            <button class="btn danger" type="button" onclick="deleteTimelineTicketPoint('${item.id}')">Видалити подію з таймлайну</button>
           </div>
         </article>
       `;
@@ -908,6 +972,7 @@
 
     function renderSync() {
       const config = getSyncConfig();
+      const settings = getSyncSettings();
       const status = localStorage.getItem(SYNC_STATUS_KEY) || (navigator.onLine ? "офлайн fallback активний" : "офлайн");
       return `
         <section class="screen" id="screen-sync">
@@ -929,8 +994,20 @@
             </div>
           </div>
           <div class="card">
+            <h3>Автосинхронізація</h3>
+            <div class="form-grid">
+              <label class="item"><input id="syncAutosync" type="checkbox" ${settings.autosync ? "checked" : ""}><span>Автосинхронізація увімкнена</span></label>
+              <label class="item"><input id="syncOnOpen" type="checkbox" ${settings.syncOnOpen ? "checked" : ""}><span>Sync при відкритті</span></label>
+              <div class="field"><label for="syncInterval">Інтервал</label><select id="syncInterval">
+                <option value="5" ${Number(settings.intervalMinutes) === 5 ? "selected" : ""}>5 хв</option>
+                <option value="15" ${Number(settings.intervalMinutes) === 15 ? "selected" : ""}>15 хв</option>
+                <option value="30" ${Number(settings.intervalMinutes) === 30 ? "selected" : ""}>30 хв</option>
+              </select></div>
+            </div>
+          </div>
+          <div class="card">
             <h3>Вкладення</h3>
-            <p class="muted">Скріншоти квитків зберігаються тільки на цьому пристрої. Для другого телефона їх потрібно додати окремо.</p>
+            <p class="muted">PDF, фото і QR квитків зберігаються під одним owner id: routePointId для події таймлайну або ticket.id для окремого квитка. Якщо Supabase підключено, файли йдуть у Storage bucket camino-files; інакше працює локальний IndexedDB fallback.</p>
           </div>
           <div class="card">
             <h3>Журнал синхронізації</h3>
@@ -969,6 +1046,7 @@
       initSyncSettings();
       initImport();
       initPWA();
+      initAutosync();
       updateNetworkStatus();
       renderAllAttachments();
     }
@@ -1073,9 +1151,22 @@
     }
 
     async function deletePoint(id) {
-      if (!confirm("Видалити цю точку маршруту? Файли точки також буде видалено.")) return;
+      if (!confirm("Видалити цю точку маршруту?")) return;
       saveRoutePoints(getRoutePoints().filter(p => p.id !== id));
-      await deleteFilesByOwner("routeAttachments", id);
+      const setup = getOptionalSupabaseClient();
+      if (setup) {
+        try {
+          const { error } = await setup.client.from("route_points").delete().eq("id", id).eq("trip_code", setup.tripCode);
+          if (error) throw error;
+          addSyncLog("видалено маршрут", id);
+        } catch (error) {
+          setSyncStatus("Помилка синхронізації");
+          addSyncLog("помилка видалення маршруту", error.message);
+        }
+      }
+      if (confirm("Також видалити прив'язані файли цієї точки?")) {
+        await deleteFilesByOwner("routeAttachments", id, { skipConfirm: true });
+      }
     }
 
     function resetBaseRoute() {
@@ -1111,10 +1202,52 @@
       closeModal();
     }
 
-    async function deleteBooking(id) {
-      if (!confirm("Видалити запис і його файл?")) return;
+    async function deleteBookingCard(id) {
+      const item = getBookings().find(booking => booking.id === id);
+      if (!item) return;
+      if (!confirm("Видалити цю картку з вкладки Квитки?")) return;
       saveBookings(getBookings().filter(item => item.id !== id));
-      await deleteFilesByOwner("attachments", id);
+      const setup = getOptionalSupabaseClient();
+      if (setup) {
+        try {
+          const { error } = await setup.client.from("tickets").delete().eq("id", id).eq("trip_code", setup.tripCode);
+          if (error) throw error;
+          addSyncLog("видалено квиток", item.name || id);
+        } catch (error) {
+          setSyncStatus("Помилка синхронізації");
+          addSyncLog("помилка видалення квитка", error.message);
+        }
+      }
+      if (confirm("Також видалити прив'язані файли зі Storage / локального сховища?")) {
+        await deleteFilesByOwner("attachments", id, { skipConfirm: true });
+      }
+      scheduleAutosync();
+    }
+
+    async function deleteTimelineTicketPoint(id) {
+      const point = getRoutePoints().find(item => item.id === id);
+      if (!point) return;
+      if (!confirm("Видалити цю подію з таймлайну?")) return;
+      saveRoutePoints(getRoutePoints().filter(item => item.id !== id));
+      const setup = getOptionalSupabaseClient();
+      if (setup) {
+        try {
+          const { error } = await setup.client.from("route_points").delete().eq("id", id).eq("trip_code", setup.tripCode);
+          if (error) throw error;
+          addSyncLog("видалено подію", point.title || `${point.from || ""} → ${point.to || ""}`.trim() || id);
+        } catch (error) {
+          setSyncStatus("Помилка синхронізації");
+          addSyncLog("помилка видалення події", error.message);
+        }
+      }
+      if (confirm("Також видалити файли цієї події зі Storage / локального сховища?")) {
+        await deleteFilesByOwner("routeAttachments", id, { skipConfirm: true });
+      }
+      scheduleAutosync();
+    }
+
+    async function deleteBooking(id) {
+      await deleteBookingCard(id);
     }
 
     function field(label, id, type, value = "") {
@@ -1200,6 +1333,18 @@
           return;
         }
       }
+      const existingLocal = (await dbAll(storeName)).find(item =>
+        item.ownerId === ownerId &&
+        item.filename === file.name &&
+        Number(item.sizeBytes || item.blob?.size || 0) === Number(file.size || 0) &&
+        item.mimeType === (file.type || "application/octet-stream")
+      );
+      if (existingLocal) {
+        closeModal();
+        await renderAllAttachments();
+        addSyncLog("файл уже існує", file.name);
+        return;
+      }
       await dbPut(storeName, {
         id: generateId(),
         ownerId,
@@ -1207,6 +1352,7 @@
         blob: file,
         filename: file.name,
         mimeType: file.type || "application/octet-stream",
+        sizeBytes: file.size || 0,
         createdAt: new Date().toISOString()
       });
       if (storeName === "attachments" || (storeName === "routeAttachments" && isTicketLikeRoutePoint(ownerId))) {
@@ -1225,14 +1371,27 @@
       const setup = getOptionalSupabaseClient();
       if (!setup) return false;
       try {
-        setSyncStatus("Синхронізація...");
+        const mimeType = file.type || "application/octet-stream";
+        const duplicate = getTicketFiles().find(item =>
+          item.ticketId === ticketId &&
+          item.filename === file.name &&
+          item.mimeType === mimeType &&
+          Number(item.sizeBytes || 0) === Number(file.size || 0) &&
+          item.storagePath
+        );
+        if (duplicate) {
+          setSyncStatus(syncedNowLabel());
+          addSyncLog("файл уже є у Storage", file.name);
+          return true;
+        }
+        setSyncStatus("Синхронізація…");
         const { client, tripCode } = setup;
         await upsertTrip(client, tripCode);
         const id = generateId();
         const storagePath = `${safePathPart(tripCode)}/tickets/${safePathPart(ticketId)}/${id}_${safePathPart(file.name)}`;
         const { error: uploadError } = await client.storage.from("camino-files").upload(storagePath, file, {
           cacheControl: "3600",
-          contentType: file.type || "application/octet-stream",
+          contentType: mimeType,
           upsert: false
         });
         if (uploadError) throw uploadError;
@@ -1241,7 +1400,7 @@
           trip_code: tripCode,
           ticket_id: ticketId,
           filename: file.name,
-          mime_type: file.type || "application/octet-stream",
+          mime_type: mimeType,
           storage_path: storagePath,
           size_bytes: file.size || 0,
           created_at: nowISO(),
@@ -1249,11 +1408,11 @@
         };
         await cloudUpsert(client, "ticket_files", [row]);
         saveTicketFiles([rowToTicketFile(row), ...getTicketFiles().filter(item => item.id !== id)], { markDirty: false });
-        setSyncStatus("Синхронізовано");
+        setSyncStatus(syncedNowLabel());
         addSyncLog("завантажено файл", file.name);
         return true;
       } catch (error) {
-        setSyncStatus("Помилка sync");
+        setSyncStatus("Помилка синхронізації");
         addSyncLog("помилка файлу", error.message);
         alert(`Не вдалося завантажити файл у Supabase. Файл буде збережено локально. ${error.message}`);
         return false;
@@ -1371,7 +1530,7 @@
       }
       const { data, error } = await setup.client.storage.from("camino-files").createSignedUrl(file.storagePath, 60 * 60);
       if (error) {
-        setSyncStatus("Помилка sync");
+        setSyncStatus("Помилка синхронізації");
         addSyncLog("помилка signed url", error.message);
         alert(error.message);
         return file;
@@ -1395,21 +1554,21 @@
           if (error) throw error;
         }
         saveTicketFiles(files.filter(item => item.id !== id), { markDirty: false });
-        setSyncStatus(setup ? "Синхронізовано" : "Є локальні зміни");
+        setSyncStatus(setup ? syncedNowLabel() : "Є локальні зміни");
         addSyncLog("видалено файл", file.filename);
       } catch (error) {
-        setSyncStatus("Помилка sync");
+        setSyncStatus("Помилка синхронізації");
         addSyncLog("помилка видалення файлу", error.message);
       }
       renderAllAttachments();
     }
 
-    async function deleteFilesByOwner(storeName, ownerId) {
+    async function deleteFilesByOwner(storeName, ownerId, options = {}) {
       const files = await dbAll(storeName);
       await Promise.all(files.filter(file => file.ownerId === ownerId).map(file => dbDelete(storeName, file.id)));
-      if (storeName === "attachments") {
+      if (storeName === "attachments" || storeName === "routeAttachments") {
         const cloudFiles = getTicketFiles().filter(file => file.ticketId === ownerId);
-        for (const file of cloudFiles) await deleteCloudFile(file.id, { skipConfirm: true });
+        for (const file of cloudFiles) await deleteCloudFile(file.id, { skipConfirm: options.skipConfirm !== false });
       }
       renderAllAttachments();
     }
@@ -1519,6 +1678,17 @@
           saveSyncConfig(readSyncForm());
         });
       });
+      const autosync = document.getElementById("syncAutosync");
+      const syncOnOpen = document.getElementById("syncOnOpen");
+      const interval = document.getElementById("syncInterval");
+      const saveSettings = () => saveSyncSettings({
+        autosync: Boolean(autosync?.checked),
+        syncOnOpen: Boolean(syncOnOpen?.checked),
+        intervalMinutes: Number(interval?.value || 5)
+      });
+      autosync?.addEventListener("change", saveSettings);
+      syncOnOpen?.addEventListener("change", saveSettings);
+      interval?.addEventListener("change", saveSettings);
     }
 
     function getSupabaseClient() {
@@ -1748,7 +1918,7 @@
 
     async function uploadLocalToCloud() {
       try {
-        setSyncStatus("синхронізація...");
+        setSyncStatus("Синхронізація…");
         const { client, tripCode } = getSupabaseClient();
         await upsertTrip(client, tripCode);
         await cloudReplace(client, "route_points", tripCode, getRoutePoints().map((item, index) => routeToRow(item, index, tripCode)));
@@ -1758,17 +1928,17 @@
         await cloudReplace(client, "expenses", tripCode, getExpenses().map(item => expenseToRow(item, tripCode)));
         await uploadNotes(client, tripCode);
         await uploadChecklists(client, tripCode);
-        setSyncStatus("синхронізовано");
+        setSyncStatus(syncedNowLabel());
         addSyncLog("синхронізовано", "локальні дані завантажено в хмару");
       } catch (error) {
-        setSyncStatus(`помилка: ${error.message}`);
+        setSyncStatus(`Помилка синхронізації: ${error.message}`);
         addSyncLog("помилка", error.message);
       }
     }
 
     async function pullCloudToLocal() {
       try {
-        setSyncStatus("синхронізація...");
+        setSyncStatus("Синхронізація…");
         const { client, tripCode } = getSupabaseClient();
         const [routes, tickets, ticketFiles, expenses] = await Promise.all([
           cloudSelect(client, "route_points", tripCode),
@@ -1782,12 +1952,12 @@
         localStorage.setItem("camino2026_expenses", JSON.stringify(expenses.map(rowToExpense)));
         await pullNotes(client, tripCode);
         await pullChecklists(client, tripCode);
-        setSyncStatus("синхронізовано");
+        setSyncStatus(syncedNowLabel());
         addSyncLog("прочитано маршрут", `${routes.length} точок`);
         addSyncLog("синхронізовано", "хмарні дані підтягнуто локально");
         refresh();
       } catch (error) {
-        setSyncStatus(`помилка: ${error.message}`);
+        setSyncStatus(`Помилка синхронізації: ${error.message}`);
         addSyncLog("помилка", error.message);
       }
     }
@@ -1797,10 +1967,13 @@
     }
 
     async function syncNow(options = {}) {
-      if (isSyncing) return;
+      if (isSyncing) {
+        pendingSync = true;
+        return;
+      }
       isSyncing = true;
       try {
-        setSyncStatus("Синхронізація...");
+        setSyncStatus("Синхронізація…");
         const { client, tripCode } = getSupabaseClient();
         await upsertTrip(client, tripCode);
 
@@ -1823,10 +1996,22 @@
         const cloudFileMap = new Map(cloudTicketFiles.map(file => [String(file.id), rowToTicketFile(file)]));
         const mergedFiles = [...localTicketFiles];
         cloudFileMap.forEach((file, id) => {
-          if (!localFileMap.has(id)) mergedFiles.push(file);
+          const localFile = localFileMap.get(id);
+          if (!localFile) {
+            mergedFiles.push(file);
+            return;
+          }
+          if (isCloudNewer(localFile.updatedAt, file.updatedAt)) {
+            const index = mergedFiles.findIndex(item => String(item.id) === id);
+            mergedFiles[index] = file;
+          }
         });
         const localFileRows = localTicketFiles
           .filter(file => file.storagePath)
+          .filter(file => {
+            const cloudFile = cloudFileMap.get(String(file.id));
+            return !cloudFile || !isCloudNewer(file.updatedAt, cloudFile.updatedAt);
+          })
           .map(file => ticketFileToRow(file, tripCode));
         await cloudUpsert(client, "ticket_files", localFileRows);
         saveTicketFiles(await hydrateSignedTicketFiles(client, mergedFiles), { markDirty: false });
@@ -1838,15 +2023,19 @@
 
         await syncNotes(client, tripCode);
         await syncChecklists(client, tripCode);
-        setSyncStatus("Синхронізовано");
+        setSyncStatus(syncedNowLabel());
         addSyncLog(options.silent ? "autosync" : "синхронізовано", "lastUpdated wins");
         refresh();
       } catch (error) {
-        setSyncStatus("Помилка sync");
+        setSyncStatus("Помилка синхронізації");
         addSyncLog("помилка", error.message);
         if (options.silent) throw error;
       } finally {
         isSyncing = false;
+        if (pendingSync) {
+          pendingSync = false;
+          setTimeout(() => syncNow({ silent: true }), 0);
+        }
       }
     }
 
@@ -1947,7 +2136,8 @@
 
     function updateNetworkStatus() {
       const chip = document.getElementById("offlineStatus");
-      chip.textContent = navigator.onLine ? "Готово до офлайн-роботи" : "Офлайн-режим активний";
+      const savedStatus = localStorage.getItem(SYNC_STATUS_KEY);
+      chip.textContent = savedStatus || (navigator.onLine ? "Локально" : "Офлайн-режим активний");
     }
 
     function initPWA() {
