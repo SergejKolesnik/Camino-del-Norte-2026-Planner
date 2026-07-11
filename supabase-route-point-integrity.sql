@@ -114,25 +114,129 @@ where g.rows_with_files > 1
    or (g.time_norm = '' and g.distinct_notes > 1)
 order by e.duplicate_key, e.updated_at desc;
 
--- 3) PREVIEW: old sync test records that should not stay in the timeline.
+-- 3) SCHEMA AUDIT: test cleanup must use real data markers, not generated ids.
+select table_name, column_name, data_type
+from information_schema.columns
+where table_schema = 'public'
+  and table_name in ('route_points', 'tickets', 'ticket_files')
+  and column_name in ('id', 'type', 'title', 'from_place', 'to_place', 'note', 'booking_number', 'related_point_id', 'ticket_id', 'is_test')
+order by table_name, ordinal_position;
+
+-- 4) PREVIEW: old sync test records that should not stay in the timeline.
 select id, trip_code, date, time, title, from_place, to_place
 from public.route_points
-where id like 'sync_test_%'
+where title like 'SYNC_TEST_%'
+   or from_place = 'Supabase test'
+   or to_place = 'Camino PWA'
+   or note = 'Diagnostic test route point'
+   or note like '%тестова точка%'
 order by date, time, created_at;
 
--- 4) CONTROL BEFORE TRANSACTION: route point counts by trip_code.
+-- 5) CONTROL BEFORE TRANSACTION: route point counts by trip_code.
 select trip_code, count(*) as route_points_count
 from public.route_points
 where trip_code in ('camino-2026', 'camino2026')
 group by trip_code
 order by trip_code;
 
--- 5) CONTROL BEFORE TRANSACTION: old sync test route point count.
-select count(*) as sync_test_route_points_before
+-- 6) CONTROL BEFORE TRANSACTION: old test route point count.
+select count(*) as test_route_points_before
 from public.route_points
-where id like 'sync_test_%';
+where title like 'SYNC_TEST_%'
+   or from_place = 'Supabase test'
+   or to_place = 'Camino PWA'
+   or note = 'Diagnostic test route point'
+   or note like '%тестова точка%';
 
--- 6) TRANSACTION: canonical trip_code + old test cleanup + safe duplicate cleanup.
+-- 7) DRY RUN: build duplicate map and show planned remaps. No DELETE.
+begin;
+
+create temporary table route_point_duplicate_map_dry_run on commit drop as
+with enriched as (
+  select
+    rp.*,
+    concat_ws('|',
+      case
+        when rp.trip_code = 'camino2026' then 'camino-2026'
+        else rp.trip_code
+      end,
+      coalesce(rp.date, ''),
+      coalesce(rp.time, ''),
+      lower(trim(coalesce(rp.type, ''))),
+      lower(trim(coalesce(rp.title, ''))),
+      lower(trim(coalesce(rp.from_place, ''))),
+      lower(trim(coalesce(rp.to_place, '')))
+    ) as duplicate_key,
+    (
+      case when nullif(trim(coalesce(rp.date, '')), '') is not null then 1 else 0 end +
+      case when nullif(trim(coalesce(rp.time, '')), '') is not null then 1 else 0 end +
+      case when nullif(trim(coalesce(rp.type, '')), '') is not null then 1 else 0 end +
+      case when nullif(trim(coalesce(rp.from_place, '')), '') is not null then 1 else 0 end +
+      case when nullif(trim(coalesce(rp.to_place, '')), '') is not null then 1 else 0 end +
+      case when nullif(trim(coalesce(rp.title, '')), '') is not null then 1 else 0 end +
+      case when nullif(trim(coalesce(rp.address, '')), '') is not null then 1 else 0 end +
+      case when nullif(trim(coalesce(rp.note, '')), '') is not null then 1 else 0 end +
+      case when nullif(trim(coalesce(rp.maps_url, '')), '') is not null then 1 else 0 end +
+      case when nullif(trim(coalesce(rp.status, '')), '') is not null then 1 else 0 end
+    ) as filled_score,
+    (select count(*) from public.ticket_files tf where tf.ticket_id = rp.id) as ticket_files_count,
+    (select count(*) from public.tickets t where t.related_point_id = rp.id) as linked_tickets_count
+  from public.route_points rp
+  where rp.trip_code in ('camino-2026', 'camino2026')
+),
+safe_groups as (
+  select
+    duplicate_key,
+    max(coalesce(time, '')) as time_norm,
+    count(distinct nullif(trim(coalesce(note, '')), '')) as distinct_notes,
+    count(*) filter (where ticket_files_count > 0) as rows_with_files,
+    count(*) filter (where linked_tickets_count > 0) as rows_with_tickets
+  from enriched
+  group by duplicate_key
+  having count(*) > 1
+     and count(*) filter (where ticket_files_count > 0) <= 1
+     and count(*) filter (where linked_tickets_count > 0) <= 1
+     and (max(coalesce(time, '')) <> '' or count(distinct nullif(trim(coalesce(note, '')), '')) <= 1)
+),
+ranked as (
+  select
+    e.*,
+    first_value(e.id) over (
+      partition by e.duplicate_key
+      order by e.ticket_files_count desc, e.linked_tickets_count desc, e.filled_score desc, e.updated_at desc nulls last, e.created_at desc nulls last, e.id
+    ) as canonical_id,
+    row_number() over (
+      partition by e.duplicate_key
+      order by e.ticket_files_count desc, e.linked_tickets_count desc, e.filled_score desc, e.updated_at desc nulls last, e.created_at desc nulls last, e.id
+    ) as rn
+  from enriched e
+  join safe_groups sg using (duplicate_key)
+)
+select id as duplicate_id, canonical_id
+from ranked
+where rn > 1;
+
+select
+  m.duplicate_id,
+  m.canonical_id,
+  coalesce(t.linked_tickets, 0) as linked_tickets,
+  coalesce(tf.linked_files, 0) as linked_files
+from route_point_duplicate_map_dry_run m
+left join (
+  select related_point_id, count(*) as linked_tickets
+  from public.tickets
+  group by related_point_id
+) t on t.related_point_id = m.duplicate_id
+left join (
+  select ticket_id, count(*) as linked_files
+  from public.ticket_files
+  group by ticket_id
+) tf on tf.ticket_id = m.duplicate_id
+order by m.canonical_id, m.duplicate_id;
+
+rollback;
+
+-- 8) TRANSACTION: canonical trip_code + old test cleanup + safe duplicate cleanup.
 begin;
 
 insert into public.trips (code, title)
@@ -173,24 +277,51 @@ delete from public.trips where code = 'camino2026';
 
 delete from public.ticket_files
 where ticket_id in (
-  select id from public.route_points where id like 'sync_test_%'
+  select id
+  from public.route_points
+  where title like 'SYNC_TEST_%'
+     or from_place = 'Supabase test'
+     or to_place = 'Camino PWA'
+     or note = 'Diagnostic test route point'
+     or note like '%тестова точка%'
+  union
+  select id
+  from public.tickets
+  where title like 'SYNC_TEST_%'
+     or booking_number like 'SYNC_TEST_%'
+     or note = 'Diagnostic test ticket'
 );
 
 delete from public.tickets
 where related_point_id in (
-  select id from public.route_points where id like 'sync_test_%'
+  select id
+  from public.route_points
+  where title like 'SYNC_TEST_%'
+     or from_place = 'Supabase test'
+     or to_place = 'Camino PWA'
+     or note = 'Diagnostic test route point'
+     or note like '%тестова точка%'
 )
-or id like 'sync_test_%';
+or title like 'SYNC_TEST_%'
+or booking_number like 'SYNC_TEST_%'
+or note = 'Diagnostic test ticket';
 
 delete from public.route_points
-where id like 'sync_test_%';
+where title like 'SYNC_TEST_%'
+   or from_place = 'Supabase test'
+   or to_place = 'Camino PWA'
+   or note = 'Diagnostic test route point'
+   or note like '%тестова точка%';
 
 create temporary table route_point_duplicate_map on commit drop as
 with enriched as (
   select
     rp.*,
     concat_ws('|',
-      rp.trip_code,
+      case
+        when rp.trip_code = 'camino2026' then 'camino-2026'
+        else rp.trip_code
+      end,
       coalesce(rp.date, ''),
       coalesce(rp.time, ''),
       lower(trim(coalesce(rp.type, ''))),
@@ -265,19 +396,23 @@ where rp.id = m.duplicate_id;
 
 commit;
 
--- 7) CONTROL AFTER TRANSACTION: route point counts by trip_code.
+-- 9) CONTROL AFTER TRANSACTION: route point counts by trip_code.
 select trip_code, count(*) as route_points_count
 from public.route_points
 where trip_code in ('camino-2026', 'camino2026')
 group by trip_code
 order by trip_code;
 
--- 8) CONTROL AFTER TRANSACTION: old sync test route point count.
-select count(*) as sync_test_route_points_after
+-- 10) CONTROL AFTER TRANSACTION: old test route point count.
+select count(*) as test_route_points_after
 from public.route_points
-where id like 'sync_test_%';
+where title like 'SYNC_TEST_%'
+   or from_place = 'Supabase test'
+   or to_place = 'Camino PWA'
+   or note = 'Diagnostic test route point'
+   or note like '%тестова точка%';
 
--- 9) VERIFY: should stay stable after repeated app Download/Sync.
+-- 11) VERIFY: should stay stable after repeated app Download/Sync.
 select count(*) as route_points_after_cleanup
 from public.route_points
 where trip_code = 'camino-2026';
