@@ -6,7 +6,10 @@ with enriched as (
   select
     rp.*,
     concat_ws('|',
-      rp.trip_code,
+      case
+        when rp.trip_code = 'camino2026' then 'camino-2026'
+        else rp.trip_code
+      end,
       coalesce(rp.date, ''),
       coalesce(rp.time, ''),
       lower(trim(coalesce(rp.type, ''))),
@@ -75,7 +78,10 @@ with enriched as (
   select
     rp.*,
     concat_ws('|',
-      rp.trip_code,
+      case
+        when rp.trip_code = 'camino2026' then 'camino-2026'
+        else rp.trip_code
+      end,
       coalesce(rp.date, ''),
       coalesce(rp.time, ''),
       lower(trim(coalesce(rp.type, ''))),
@@ -108,7 +114,25 @@ where g.rows_with_files > 1
    or (g.time_norm = '' and g.distinct_notes > 1)
 order by e.duplicate_key, e.updated_at desc;
 
--- 3) TRANSACTION: canonical trip_code + safe duplicate cleanup.
+-- 3) PREVIEW: old sync test records that should not stay in the timeline.
+select id, trip_code, date, time, title, from_place, to_place
+from public.route_points
+where id like 'sync_test_%'
+order by date, time, created_at;
+
+-- 4) CONTROL BEFORE TRANSACTION: route point counts by trip_code.
+select trip_code, count(*) as route_points_count
+from public.route_points
+where trip_code in ('camino-2026', 'camino2026')
+group by trip_code
+order by trip_code;
+
+-- 5) CONTROL BEFORE TRANSACTION: old sync test route point count.
+select count(*) as sync_test_route_points_before
+from public.route_points
+where id like 'sync_test_%';
+
+-- 6) TRANSACTION: canonical trip_code + old test cleanup + safe duplicate cleanup.
 begin;
 
 insert into public.trips (code, title)
@@ -146,6 +170,20 @@ set state = case
 delete from public.notes where trip_code = 'camino2026';
 delete from public.checklists where trip_code = 'camino2026';
 delete from public.trips where code = 'camino2026';
+
+delete from public.ticket_files
+where ticket_id in (
+  select id from public.route_points where id like 'sync_test_%'
+);
+
+delete from public.tickets
+where related_point_id in (
+  select id from public.route_points where id like 'sync_test_%'
+)
+or id like 'sync_test_%';
+
+delete from public.route_points
+where id like 'sync_test_%';
 
 create temporary table route_point_duplicate_map on commit drop as
 with enriched as (
@@ -227,7 +265,19 @@ where rp.id = m.duplicate_id;
 
 commit;
 
--- 4) VERIFY: should stay stable after repeated app Download/Sync.
+-- 7) CONTROL AFTER TRANSACTION: route point counts by trip_code.
+select trip_code, count(*) as route_points_count
+from public.route_points
+where trip_code in ('camino-2026', 'camino2026')
+group by trip_code
+order by trip_code;
+
+-- 8) CONTROL AFTER TRANSACTION: old sync test route point count.
+select count(*) as sync_test_route_points_after
+from public.route_points
+where id like 'sync_test_%';
+
+-- 9) VERIFY: should stay stable after repeated app Download/Sync.
 select count(*) as route_points_after_cleanup
 from public.route_points
 where trip_code = 'camino-2026';
