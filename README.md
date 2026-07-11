@@ -115,7 +115,8 @@ create table if not exists public.tickets (
 create table if not exists public.ticket_files (
   id text primary key,
   trip_code text not null references public.trips(code) on delete cascade,
-  ticket_id text references public.tickets(id) on delete cascade,
+  -- owner id: either tickets.id or route_points.id for timeline travel documents
+  ticket_id text not null,
   filename text not null,
   mime_type text not null default 'application/octet-stream',
   storage_path text not null,
@@ -156,6 +157,13 @@ create index if not exists route_points_trip_code_sort_idx on public.route_point
 create index if not exists tickets_trip_code_idx on public.tickets(trip_code);
 create index if not exists ticket_files_trip_ticket_idx on public.ticket_files(trip_code, ticket_id);
 create unique index if not exists ticket_files_storage_path_unique_idx on public.ticket_files(storage_path);
+
+-- Migration for older installs where ticket_files.ticket_id had an FK to tickets(id).
+-- Timeline documents use route_points.id as the same owner id, so this FK must be removed.
+alter table public.ticket_files
+  drop constraint if exists ticket_files_ticket_id_fkey;
+alter table public.ticket_files
+  alter column ticket_id set not null;
 create index if not exists expenses_trip_code_idx on public.expenses(trip_code);
 create unique index if not exists trips_code_unique_idx on public.trips(code);
 

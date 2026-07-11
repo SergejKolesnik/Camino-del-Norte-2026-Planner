@@ -107,6 +107,14 @@
     .chip.sun { background: #fff0df; color: #884b1f; }
     .chip.green { background: #eaf7ef; color: #216040; }
     .chip.red { background: #fff0ef; color: #8f4039; }
+    button.chip {
+      border: 0;
+      cursor: pointer;
+      font: inherit;
+      font-weight: 850;
+    }
+    .doc-jump { background: #fff7d7; color: #76520f; }
+    .doc-jump[hidden] { display: none; }
 
     .offline-chip {
       display: inline-flex;
@@ -216,6 +224,12 @@
       border: 1px solid var(--line);
       border-radius: 18px;
       background: rgba(255,255,255,.68);
+      transition: box-shadow .25s ease, border-color .25s ease, background .25s ease;
+    }
+    .point.highlight {
+      border-color: #f3b84d;
+      background: #fff9e8;
+      box-shadow: 0 0 0 4px rgba(243, 184, 77, .22);
     }
     .point.flash {
       outline: 3px solid rgba(217, 130, 69, .65);
@@ -276,9 +290,9 @@
     }
 
     .items { display: grid; gap: 8px; margin-top: 12px; }
-    label.item {
+    .item {
       display: grid;
-      grid-template-columns: 32px 1fr;
+      grid-template-columns: 32px 1fr auto;
       align-items: center;
       min-height: 54px;
       gap: 12px;
@@ -288,7 +302,8 @@
       border: 1px solid var(--line);
     }
     input[type="checkbox"] { width: 28px; height: 28px; margin: 0; accent-color: var(--green); }
-    label.item input:checked + span { color: var(--muted); text-decoration: line-through; }
+    .item input:checked + span { color: var(--muted); text-decoration: line-through; }
+    .item-tools { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
     .progress { height: 12px; margin: 8px 0 3px; border-radius: 999px; overflow: hidden; background: rgba(23,37,43,.1); }
     .bar { height: 100%; width: 0; border-radius: inherit; background: linear-gradient(90deg, var(--green), var(--ocean)); transition: width .2s ease; }
 
@@ -434,6 +449,7 @@
     const SYNC_STATUS_KEY = "camino2026_sync_status";
     const SYNC_LOG_KEY = "camino2026_sync_log";
     const SYNC_SETTINGS_KEY = "camino2026_sync_settings";
+    const SYNC_LAST_TRIP_KEY = "camino2026_last_synced_trip_code";
     const TICKET_FILES_KEY = "camino2026_ticket_files";
     const AUTOSYNC_DELAY = 2500;
     let autosyncTimer = null;
@@ -445,6 +461,10 @@
     const statuses = ["заплановано", "куплено", "підтверджено", "виконано"];
     const bookingTypes = ["квиток", "готель", "страховка", "інше"];
     const attachmentKinds = ["квиток", "QR", "бронювання", "скрін карти", "інше"];
+    const ticketLikePointTypes = new Set([
+      "flight", "train", "bus", "ferry", "hotel", "booking", "ticket", "transfer",
+      "літак", "поїзд", "автобус", "пором", "паром", "готель", "бронювання", "квиток", "трансфер"
+    ]);
 
     const defaultRoutePoints = [
       point("2026-07-25", "", "поїзд", "Дніпро", "Хелм", "", "Вокзал Дніпро / Chełm", "Перший великий переїзд у бік Польщі.", "", "заплановано"),
@@ -508,6 +528,35 @@
 
     function readJSON(key, fallback) {
       try { return JSON.parse(localStorage.getItem(key) || "null") ?? fallback; } catch { return fallback; }
+    }
+
+    function getChecklistState(list) {
+      const saved = readJSON(list.storage, null);
+      if (saved && Array.isArray(saved.items)) {
+        return {
+          version: 2,
+          items: saved.items.map((item, index) => ({
+            id: item.id || `item_${index}`,
+            text: item.text || list.items[index] || "",
+            checked: Boolean(item.checked)
+          })).filter(item => item.text)
+        };
+      }
+      if (Array.isArray(saved)) {
+        return {
+          version: 2,
+          items: list.items.map((text, index) => ({ id: `base_${index}`, text, checked: Boolean(saved[index]) }))
+        };
+      }
+      return {
+        version: 2,
+        items: list.items.map((text, index) => ({ id: `base_${index}`, text, checked: false }))
+      };
+    }
+
+    function saveChecklistState(list, state, options = {}) {
+      localStorage.setItem(list.storage, JSON.stringify({ version: 2, items: state.items }));
+      if (options.markDirty !== false) touchSync("checklists", list.storage);
     }
 
     function nowISO() {
@@ -690,6 +739,15 @@
       refresh();
     }
 
+    function isTicketLikePoint(point) {
+      return ticketLikePointTypes.has(String(point.type || "").trim().toLowerCase());
+    }
+
+    function getTicketLikePoints(points, bookings) {
+      const linkedPointIds = new Set(bookings.map(item => item.routePointId).filter(Boolean));
+      return points.filter(point => isTicketLikePoint(point) && !linkedPointIds.has(point.id));
+    }
+
     function todayISO() {
       const now = new Date();
       return new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString().slice(0, 10);
@@ -718,13 +776,13 @@
 
     function isTicketLikeRoutePoint(pointId) {
       const point = getRoutePoints().find(item => item.id === pointId);
-      return Boolean(point && isTicketLikeType(point.type));
+      return Boolean(point && isTicketLikePoint(point));
     }
 
     function getTimelineTicketPoints(bookings = getBookings()) {
       const linkedPointIds = new Set(bookings.map(item => item.routePointId).filter(Boolean));
       return getRoutePoints()
-        .filter(point => isTicketLikeType(point.type))
+        .filter(point => isTicketLikePoint(point))
         .filter(point => !isEmptyRouteTicketPoint(point))
         .filter(point => !linkedPointIds.has(point.id))
         .sort(sortPoints);
@@ -797,13 +855,16 @@
 
     function pointCard(item, index, total) {
       return `
-        <article class="point">
+        <article class="point" data-timeline-route-point="${item.id}">
           <div class="point-top">
             <div>
               <div class="point-title">${escapeHtml(item.from)} → ${escapeHtml(item.to)}</div>
               <div class="point-meta">${escapeHtml(item.date || "без дати")} ${escapeHtml(item.time || "")}</div>
             </div>
-            <span class="chip ${item.status === "виконано" ? "green" : item.status === "куплено" ? "sun" : ""}">${escapeHtml(item.status)}</span>
+            <div class="mini-actions">
+              <button class="chip doc-jump" type="button" data-route-file-jump="${item.id}" onclick="openTicketsForRoutePoint('${item.id}')" title="Відкрити документи у квитках" hidden></button>
+              <span class="chip ${item.status === "виконано" ? "green" : item.status === "куплено" ? "sun" : ""}">${escapeHtml(item.status)}</span>
+            </div>
           </div>
           <div>
             <span class="chip">${escapeHtml(item.type)}</span>
@@ -818,7 +879,7 @@
             <button class="btn ghost" type="button" onclick="copyPoint('${item.id}')">Скопіювати</button>
             <button class="btn secondary" type="button" onclick="movePoint('${item.id}', -1)" ${index === 0 ? "disabled" : ""}>Вгору</button>
             <button class="btn secondary" type="button" onclick="movePoint('${item.id}', 1)" ${index === total - 1 ? "disabled" : ""}>Вниз</button>
-            <button class="btn ghost" type="button" onclick="openRouteFileForm('${item.id}')">Додати файл</button>
+            <button class="btn ghost" type="button" onclick="openRouteFileForm('${item.id}')">Додати PDF / фото / QR</button>
             <button class="btn danger" type="button" onclick="deletePoint('${item.id}')">Видалити</button>
           </div>
         </article>
@@ -829,6 +890,10 @@
       const bookings = getBookings();
       const points = getRoutePoints();
       const timelineTickets = getTimelineTicketPoints(bookings);
+      const items = bookings
+        .map(item => ({ kind: "booking", item }))
+        .concat(timelineTickets.map(item => ({ kind: "point", item })))
+        .sort((a, b) => sortPoints(a.item, b.item));
       return `
         <section class="screen" id="screen-bookings">
           <div class="card">
@@ -838,12 +903,7 @@
             <div class="actions"><button class="btn" type="button" onclick="openBookingForm()">Додати запис</button></div>
           </div>
           <div class="timeline">
-            ${bookings.length || timelineTickets.length
-              ? [
-                  ...bookings.map(item => bookingCard(item, points)),
-                  ...timelineTickets.map(item => timelineTicketCard(item))
-                ].join("")
-              : `<div class="empty">Ще немає квитків або бронювань.</div>`}
+            ${items.length ? items.map(entry => entry.kind === "booking" ? bookingCard(entry.item, points) : timelineTicketCard(entry.item)).join("") : `<div class="empty">Ще немає квитків або бронювань.</div>`}
           </div>
         </section>
       `;
@@ -852,7 +912,7 @@
     function bookingCard(item, points) {
       const point = points.find(p => p.id === item.routePointId);
       return `
-        <article class="point">
+        <article class="point" ${point ? `data-ticket-route-point="${point.id}"` : ""}>
           <div class="point-top">
             <div>
               <div class="point-title">${escapeHtml(item.name || "Без назви")}</div>
@@ -865,8 +925,9 @@
           ${point ? `<div class="attachments" data-route-files="${point.id}"></div>` : ""}
           <div class="attachments" data-booking-files="${item.id}"></div>
           <div class="actions">
+            ${point ? `<button class="btn ghost" type="button" onclick="openTimelineForRoutePoint('${point.id}')">Відкрити у таймлайні</button>` : ""}
             <button class="btn ghost" type="button" onclick="openBookingForm('${item.id}')">Редагувати</button>
-            <button class="btn ghost" type="button" onclick="openBookingFileForm('${item.id}')">Додати PDF / фото / QR</button>
+            <button class="btn ghost" type="button" onclick="${point ? `openRouteFileForm('${point.id}')` : `openBookingFileForm('${item.id}')`}">Додати PDF / фото / QR</button>
             <button class="btn danger" type="button" onclick="deleteBookingCard('${item.id}')">${isEmptyBooking(item) ? "Видалити" : "Видалити картку"}</button>
           </div>
         </article>
@@ -877,7 +938,7 @@
       const title = item.title || `${item.from || ""} → ${item.to || ""}`.trim() || "Точка маршруту";
       const place = item.from && item.to ? `${item.from} → ${item.to}` : (item.address || item.from || item.to || "");
       return `
-        <article class="point">
+        <article class="point" data-ticket-route-point="${item.id}">
           <div class="point-top">
             <div>
               <div class="point-title">${escapeHtml(title)}</div>
@@ -888,9 +949,10 @@
           ${place ? `<p class="point-note"><b>Маршрут / місце:</b> ${escapeHtml(place)}</p>` : ""}
           ${item.address ? `<p class="point-note"><b>Адреса:</b> ${escapeHtml(item.address)}</p>` : ""}
           ${item.note ? `<p class="point-note">${escapeHtml(item.note)}</p>` : ""}
+          ${item.mapsUrl ? `<p><a href="${escapeHtml(item.mapsUrl)}" target="_blank" rel="noopener">Google Maps</a></p>` : ""}
           <div class="attachments" data-route-files="${item.id}"></div>
           <div class="actions">
-            <button class="btn ghost" type="button" onclick="openTimelinePoint('${item.id}')">Відкрити точку в таймлайні</button>
+            <button class="btn ghost" type="button" onclick="openTimelineForRoutePoint('${item.id}')">Відкрити у таймлайні</button>
             <button class="btn ghost" type="button" onclick="openRouteFileForm('${item.id}')">Додати PDF / фото / QR</button>
             <button class="btn secondary" type="button" onclick="openPointForm('${item.id}')">Змінити тип події</button>
             <button class="btn danger" type="button" onclick="deleteTimelineTicketPoint('${item.id}')">Видалити подію з таймлайну</button>
@@ -913,14 +975,27 @@
 
     function renderChecklist(id) {
       const list = checklists[id];
+      const state = getChecklistState(list);
       return `
         <section class="screen" id="screen-${id}">
-          <div class="card checklist" data-storage="${list.storage}">
+          <div class="card checklist" data-checklist="${id}" data-storage="${list.storage}">
             <h2>${list.title}</h2>
             <p class="small muted doneText"></p>
             <div class="progress"><div class="bar"></div></div>
-            <div class="items">${list.items.map(item => `<label class="item"><input type="checkbox"><span>${item}</span></label>`).join("")}</div>
-            <div class="actions"><button class="btn secondary reset" type="button">Скинути галочки</button></div>
+            <div class="items">${state.items.map(item => `
+              <div class="item" data-item-id="${item.id}">
+                <input type="checkbox" ${item.checked ? "checked" : ""}>
+                <span>${escapeHtml(item.text)}</span>
+                <div class="item-tools">
+                  <button class="btn ghost edit-item" type="button">Редагувати</button>
+                  <button class="btn danger delete-item" type="button">Видалити</button>
+                </div>
+              </div>
+            `).join("")}</div>
+            <div class="actions">
+              <button class="btn add-item" type="button">Додати пункт</button>
+              <button class="btn secondary reset" type="button">Скинути галочки</button>
+            </div>
           </div>
         </section>
       `;
@@ -974,11 +1049,17 @@
       const config = getSyncConfig();
       const settings = getSyncSettings();
       const status = localStorage.getItem(SYNC_STATUS_KEY) || (navigator.onLine ? "офлайн fallback активний" : "офлайн");
+      const lastTripCode = localStorage.getItem(SYNC_LAST_TRIP_KEY) || "";
+      const tripWarning = lastTripCode && lastTripCode !== config.tripCode
+        ? `<div class="soft small red"><strong>Увага:</strong> остання синхронізація була з trip_code <code>${escapeHtml(lastTripCode)}</code>, зараз вибрано <code>${escapeHtml(config.tripCode || "camino-2026")}</code>.</div>`
+        : "";
       return `
         <section class="screen" id="screen-sync">
           <div class="card">
             <h2>Синхронізація</h2>
             <p class="muted">Supabase є додатковим шаром. Текстові дані синхронізуються через таблиці, а файли квитків - через Storage bucket camino-files. Якщо Supabase не налаштовано, усе працює локально як раніше.</p>
+            <div class="soft small"><strong>Поточна подорож:</strong> <code>${escapeHtml(config.tripCode || "camino-2026")}</code></div>
+            ${tripWarning}
             <div class="form-grid">
               <div class="field"><label for="syncUrl">Supabase URL</label><input id="syncUrl" type="url" value="${escapeHtml(config.url)}" placeholder="https://xxxx.supabase.co"></div>
               <div class="field"><label for="syncAnonKey">Publishable (anon) key</label><input id="syncAnonKey" type="password" value="${escapeHtml(config.anonKey)}" placeholder="eyJ..."></div>
@@ -1004,6 +1085,16 @@
                 <option value="30" ${Number(settings.intervalMinutes) === 30 ? "selected" : ""}>30 хв</option>
               </select></div>
             </div>
+          </div>
+          <div class="card">
+            <h3>Перевірка синхронізації</h3>
+            <div class="actions">
+              <button class="btn ghost" type="button" onclick="runSupabaseDiagnostics()">Діагностика Supabase</button>
+              <button class="btn ghost" type="button" onclick="createSyncTestRecord()">Тестовий запис</button>
+              <button class="btn secondary" type="button" onclick="forceDownloadFromSupabase()">Примусово завантажити з Supabase</button>
+              <button class="btn danger" type="button" onclick="clearLocalAndRestoreFromSupabase()">Очистити локальні дані та відновити з Supabase</button>
+            </div>
+            <div id="syncDiagnostics" class="grid"></div>
           </div>
           <div class="card">
             <h3>Вкладення</h3>
@@ -1062,36 +1153,83 @@
       renderAllAttachments();
     }
 
-    function activateScreen(id) {
+    function activateScreen(id, options = {}) {
       document.querySelectorAll(".screen").forEach(screen => screen.classList.toggle("active", screen.id === `screen-${id}`));
       document.querySelectorAll(".nav-btn").forEach(button => button.classList.toggle("active", button.dataset.target === id));
       document.querySelector(`.nav-btn[data-target="${id}"]`)?.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
-      window.scrollTo({ top: 0, behavior: "smooth" });
+      if (options.scrollTop !== false) window.scrollTo({ top: 0, behavior: "smooth" });
       renderAllAttachments();
     }
 
-    function initChecklist(card) {
-      const key = card.dataset.storage;
-      const boxes = [...card.querySelectorAll('input[type="checkbox"]')];
-      const saved = readJSON(key, []);
-      boxes.forEach((box, index) => {
-        box.checked = Boolean(saved[index]);
-        box.addEventListener("change", save);
+    function findRouteLinkedCard(attribute, routePointId) {
+      return [...document.querySelectorAll(`[${attribute}]`)].find(card => card.getAttribute(attribute) === routePointId);
+    }
+
+    function scrollToLinkedCard(card) {
+      if (!card) return;
+      card.scrollIntoView({ behavior: "smooth", block: "center" });
+      card.classList.add("highlight");
+      window.setTimeout(() => card.classList.remove("highlight"), 2800);
+    }
+
+    function openTicketsForRoutePoint(routePointId) {
+      activateScreen("bookings", { scrollTop: false });
+      window.requestAnimationFrame(() => {
+        scrollToLinkedCard(findRouteLinkedCard("data-ticket-route-point", routePointId));
       });
+    }
+
+    function openTimelineForRoutePoint(routePointId) {
+      activateScreen("timeline", { scrollTop: false });
+      window.requestAnimationFrame(() => {
+        scrollToLinkedCard(findRouteLinkedCard("data-timeline-route-point", routePointId));
+      });
+    }
+
+    function initChecklist(card) {
+      const list = checklists[card.dataset.checklist];
+      let state = getChecklistState(list);
+      const boxes = [...card.querySelectorAll('input[type="checkbox"]')];
+      boxes.forEach((box, index) => {
+        box.addEventListener("change", () => {
+          state.items[index].checked = box.checked;
+          save();
+        });
+      });
+      card.querySelector(".add-item")?.addEventListener("click", () => {
+        const text = prompt("Новий пункт чек-листа");
+        if (!text?.trim()) return;
+        state.items.push({ id: generateId(), text: text.trim(), checked: false });
+        save();
+        refresh();
+      });
+      card.querySelectorAll(".edit-item").forEach((button, index) => button.addEventListener("click", () => {
+        const text = prompt("Назва пункту", state.items[index].text);
+        if (!text?.trim()) return;
+        state.items[index].text = text.trim();
+        save();
+        refresh();
+      }));
+      card.querySelectorAll(".delete-item").forEach((button, index) => button.addEventListener("click", () => {
+        if (!confirm("Видалити пункт чек-листа?")) return;
+        state.items.splice(index, 1);
+        save();
+        refresh();
+      }));
       card.querySelector(".reset")?.addEventListener("click", () => {
         if (confirm("Скинути галочки у цьому розділі?")) {
-          boxes.forEach(box => box.checked = false);
+          state.items.forEach(item => { item.checked = false; });
           save();
+          refresh();
         }
       });
       function save() {
-        localStorage.setItem(key, JSON.stringify(boxes.map(box => box.checked)));
-        touchSync("checklists", key);
+        saveChecklistState(list, state);
         update();
       }
       function update() {
-        const done = boxes.filter(box => box.checked).length;
-        const total = boxes.length;
+        const done = state.items.filter(item => item.checked).length;
+        const total = state.items.length;
         const pct = total ? Math.round(done / total * 100) : 0;
         card.querySelector(".bar").style.width = `${pct}%`;
         card.querySelector(".doneText").textContent = `Виконано: ${done} з ${total} (${pct}%)`;
@@ -1268,7 +1406,7 @@
 
     function openFileForm(store, ownerId, withKind) {
       modalContent.innerHTML = `
-        <h2>Додати файл</h2>
+        <h2>Додати PDF / фото / QR</h2>
         <div class="form-grid">
           ${withKind ? selectField("Тип файлу", "fileKind", attachmentKinds, "квиток") : ""}
           <div class="field"><label for="fileInput">Файл / зображення / PDF</label><input id="fileInput" type="file" accept="image/*,.pdf"></div>
@@ -1321,18 +1459,22 @@
       });
     }
 
+    async function dbClear(storeName) {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(storeName, "readwrite");
+        tx.objectStore(storeName).clear();
+        tx.oncomplete = resolve;
+        tx.onerror = () => reject(tx.error);
+      });
+    }
+
     async function saveFile(storeName, ownerId) {
       const input = document.getElementById("fileInput");
       const file = input.files?.[0];
       if (!file) { alert("Оберіть файл."); return; }
-      if (storeName === "attachments" || (storeName === "routeAttachments" && isTicketLikeRoutePoint(ownerId))) {
-        const uploaded = await trySaveTicketFileToSupabase(ownerId, file);
-        if (uploaded) {
-          closeModal();
-          await renderAllAttachments();
-          return;
-        }
-      }
+      const id = generateId();
+      const kind = document.getElementById("fileKind")?.value || "";
       const existingLocal = (await dbAll(storeName)).find(item =>
         item.ownerId === ownerId &&
         item.filename === file.name &&
@@ -1345,10 +1487,33 @@
         addSyncLog("файл уже існує", file.name);
         return;
       }
+      const uploadOptions = { id, kind };
+      const uploaded = await trySaveTicketFileToSupabase(ownerId, file, uploadOptions);
+      if (uploaded) {
+        if (uploadOptions.duplicateId) {
+          closeModal();
+          await renderAllAttachments();
+          return;
+        }
+        await dbPut(storeName, {
+          id,
+          ownerId,
+          cloudId: id,
+          kind,
+          blob: file,
+          filename: file.name,
+          mimeType: file.type || "application/octet-stream",
+          sizeBytes: file.size || 0,
+          createdAt: new Date().toISOString()
+        });
+        closeModal();
+        await renderAllAttachments();
+        return;
+      }
       await dbPut(storeName, {
-        id: generateId(),
+        id,
         ownerId,
-        kind: document.getElementById("fileKind")?.value || "",
+        kind,
         blob: file,
         filename: file.name,
         mimeType: file.type || "application/octet-stream",
@@ -1358,7 +1523,11 @@
       if (storeName === "attachments" || (storeName === "routeAttachments" && isTicketLikeRoutePoint(ownerId))) {
         setSyncStatus("Файл збережено локально. Для синхронізації підключіть Supabase.");
         addSyncLog("локальний файл", file.name);
+      } else {
+        setSyncStatus("Файл збережено локально");
+        addSyncLog("локальний файл", file.name);
       }
+      scheduleAutosync();
       closeModal();
       renderAllAttachments();
     }
@@ -1367,9 +1536,9 @@
       return String(value || "file").normalize("NFKD").replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80) || "file";
     }
 
-    async function trySaveTicketFileToSupabase(ticketId, file) {
-      const setup = getOptionalSupabaseClient();
-      if (!setup) return false;
+    async function trySaveTicketFileToSupabase(ticketId, file, options = {}) {
+      const setup = options.client && options.tripCode ? { client: options.client, tripCode: options.tripCode } : getOptionalSupabaseClient();
+      if (!setup || !navigator.onLine) return false;
       try {
         const mimeType = file.type || "application/octet-stream";
         const duplicate = getTicketFiles().find(item =>
@@ -1380,6 +1549,7 @@
           item.storagePath
         );
         if (duplicate) {
+          options.duplicateId = duplicate.id;
           setSyncStatus(syncedNowLabel());
           addSyncLog("файл уже є у Storage", file.name);
           return true;
@@ -1387,12 +1557,12 @@
         setSyncStatus("Синхронізація…");
         const { client, tripCode } = setup;
         await upsertTrip(client, tripCode);
-        const id = generateId();
+        const id = options.id || generateId();
         const storagePath = `${safePathPart(tripCode)}/tickets/${safePathPart(ticketId)}/${id}_${safePathPart(file.name)}`;
         const { error: uploadError } = await client.storage.from("camino-files").upload(storagePath, file, {
           cacheControl: "3600",
           contentType: mimeType,
-          upsert: false
+          upsert: true
         });
         if (uploadError) throw uploadError;
         const row = {
@@ -1414,15 +1584,40 @@
       } catch (error) {
         setSyncStatus("Помилка синхронізації");
         addSyncLog("помилка файлу", error.message);
-        alert(`Не вдалося завантажити файл у Supabase. Файл буде збережено локально. ${error.message}`);
+        if (!options.silent) alert(`Не вдалося завантажити файл у Supabase. Файл буде збережено локально. ${error.message}`);
         return false;
       }
     }
 
     async function renderAllAttachments() {
       await refreshTicketFileSignedUrls();
-      await renderFiles("routeAttachments", "[data-route-files]");
+      const routeFiles = await dbAll("routeAttachments");
+      renderRouteDocumentBadges(routeFiles);
+      await renderFiles("routeAttachments", "[data-route-files]", routeFiles);
       await renderFiles("attachments", "[data-booking-files]");
+    }
+
+    function renderRouteDocumentBadges(routeFiles) {
+      const cloudRouteIds = new Set(getTicketFiles()
+        .filter(file => getRoutePoints().some(point => point.id === file.ticketId))
+        .map(file => file.id));
+      const counts = routeFiles.reduce((map, file) => {
+        if (file.cloudId && cloudRouteIds.has(file.cloudId)) return map;
+        map.set(file.ownerId, (map.get(file.ownerId) || 0) + 1);
+        return map;
+      }, new Map());
+      getTicketFiles().forEach(file => {
+        if (!getRoutePoints().some(point => point.id === file.ticketId)) return;
+        counts.set(file.ticketId, (counts.get(file.ticketId) || 0) + 1);
+      });
+      document.querySelectorAll("[data-route-file-jump]").forEach(button => {
+        const count = counts.get(button.dataset.routeFileJump) || 0;
+        button.hidden = count === 0;
+        if (count > 0) {
+          button.textContent = `📎 ${count}`;
+          button.setAttribute("aria-label", `Відкрити документи: ${count}`);
+        }
+      });
     }
 
     async function refreshTicketFileSignedUrls() {
@@ -1442,15 +1637,16 @@
       if (refreshed.size) saveTicketFiles(files.map(file => refreshed.get(file.id) || file), { markDirty: false });
     }
 
-    async function renderFiles(storeName, selector) {
+    async function renderFiles(storeName, selector, providedFiles = null) {
       const containers = [...document.querySelectorAll(selector)];
       if (!containers.length) return;
-      const files = await dbAll(storeName);
-      const cloudTicketFiles = (storeName === "attachments" || storeName === "routeAttachments") ? getTicketFiles() : [];
+      const files = providedFiles || await dbAll(storeName);
+      const cloudTicketFiles = getTicketFiles();
       containers.forEach(container => {
         const ownerId = container.dataset.routeFiles || container.dataset.bookingFiles;
-        const localOwn = files.filter(file => file.ownerId === ownerId);
         const cloudOwn = cloudTicketFiles.filter(file => file.ticketId === ownerId);
+        const cloudIds = new Set(cloudOwn.map(file => file.id));
+        const localOwn = files.filter(file => file.ownerId === ownerId && !cloudIds.has(file.cloudId));
         container.innerHTML = [
           ...cloudOwn.map(file => cloudFileView(file)),
           ...localOwn.map(file => fileView(storeName, file))
@@ -1504,12 +1700,28 @@
 
     async function openCloudFile(id) {
       const file = await ensureSignedTicketFile(id);
-      if (file?.signedUrl) window.open(file.signedUrl, "_blank", "noopener");
+      if (file?.signedUrl) {
+        await cacheCloudFile(file);
+        window.open(file.signedUrl, "_blank", "noopener");
+      }
     }
 
     async function downloadCloudFile(id) {
       const file = await ensureSignedTicketFile(id);
-      if (!file?.signedUrl) return;
+      if (!file?.signedUrl) {
+        const cached = await getCachedCloudFile(id);
+        if (cached?.blob) {
+          const cachedUrl = URL.createObjectURL(cached.blob);
+          const cachedLink = document.createElement("a");
+          cachedLink.href = cachedUrl;
+          cachedLink.download = cached.filename || "camino-file";
+          document.body.appendChild(cachedLink);
+          cachedLink.click();
+          cachedLink.remove();
+        }
+        return;
+      }
+      await cacheCloudFile(file);
       const link = document.createElement("a");
       link.href = file.signedUrl;
       link.download = file.filename || "camino-file";
@@ -1525,6 +1737,8 @@
       if (file.signedUrl && new Date(file.signedUrlExpiresAt || 0).getTime() > Date.now() + 60000) return file;
       const setup = getOptionalSupabaseClient();
       if (!setup) {
+        const cached = await getCachedCloudFile(id);
+        if (cached?.blob) return { ...file, signedUrl: URL.createObjectURL(cached.blob) };
         alert("Підключіть Supabase, щоб відкрити файл з хмари.");
         return file;
       }
@@ -1539,6 +1753,42 @@
       saveTicketFiles(files.map(item => item.id === id ? file : item), { markDirty: false });
       renderAllAttachments();
       return file;
+    }
+
+    function ownerStoreForTicketFile(file) {
+      return getRoutePoints().some(point => point.id === file.ticketId) ? "routeAttachments" : "attachments";
+    }
+
+    async function getCachedCloudFile(id) {
+      const stores = ["routeAttachments", "attachments"];
+      for (const storeName of stores) {
+        const files = await dbAll(storeName);
+        const file = files.find(item => item.cloudId === id || item.id === `cloud_${id}`);
+        if (file) return file;
+      }
+      return null;
+    }
+
+    async function cacheCloudFile(file) {
+      if (!file?.signedUrl) return;
+      try {
+        const response = await fetch(file.signedUrl);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const blob = await response.blob();
+        await dbPut(ownerStoreForTicketFile(file), {
+          id: `cloud_${file.id}`,
+          ownerId: file.ticketId,
+          cloudId: file.id,
+          kind: "Supabase",
+          blob,
+          filename: file.filename,
+          mimeType: file.mimeType || blob.type || "application/octet-stream",
+          createdAt: file.createdAt || nowISO()
+        });
+        addSyncLog("файл кешовано офлайн", file.filename);
+      } catch (error) {
+        addSyncLog("помилка кешу файлу", error.message);
+      }
     }
 
     async function deleteCloudFile(id, options = {}) {
@@ -1707,6 +1957,7 @@
       try {
         const { client, tripCode } = getSupabaseClient();
         await upsertTrip(client, tripCode);
+        localStorage.setItem(SYNC_LAST_TRIP_KEY, tripCode);
         setSyncStatus("Підключено");
         addSyncLog("підключено", tripCode);
       } catch (error) {
@@ -1745,11 +1996,185 @@
         const { data, error } = await client.from("route_points").select("*").eq("id", testId).eq("trip_code", tripCode).maybeSingle();
         if (error) throw error;
         if (!data || data.id !== testId) throw new Error("Тестову точку не знайдено після запису.");
+        localStorage.setItem(SYNC_LAST_TRIP_KEY, tripCode);
         addSyncLog("прочитано маршрут", testId);
         setSyncStatus("Supabase працює");
       } catch (error) {
         setSyncStatus(`помилка: ${error.message}`);
         addSyncLog("помилка", error.message);
+      }
+    }
+
+    function setSyncDiagnostics(html) {
+      const box = document.getElementById("syncDiagnostics");
+      if (box) box.innerHTML = html;
+    }
+
+    function shortJSON(value) {
+      return escapeHtml(JSON.stringify(value, null, 2));
+    }
+
+    function rowPreview(row) {
+      const preview = {
+        id: row.id || row.list_key || row.trip_code || "",
+        trip_code: row.trip_code || "",
+        ticket_id: row.ticket_id || "",
+        related_point_id: row.related_point_id || "",
+        type: row.type || "",
+        title: row.title || row.filename || "",
+        updated_at: row.updated_at || ""
+      };
+      return Object.fromEntries(Object.entries(preview).filter(([, value]) => value !== ""));
+    }
+
+    async function readDiagnosticTable(client, table, tripCode) {
+      try {
+        const { data, error } = await client.from(table).select("*").eq("trip_code", tripCode);
+        if (error) throw error;
+        const rows = data || [];
+        const latest = rows.slice().sort((a, b) => String(b.updated_at || b.created_at || "").localeCompare(String(a.updated_at || a.created_at || ""))).slice(0, 5);
+        return { table, ok: true, count: rows.length, latest, error: "" };
+      } catch (error) {
+        return { table, ok: false, count: 0, latest: [], error: error.message };
+      }
+    }
+
+    async function runSupabaseDiagnostics() {
+      setSyncDiagnostics(`<div class="soft">Діагностика виконується...</div>`);
+      try {
+        const config = readSyncForm();
+        saveSyncConfig(config);
+        const { client, tripCode } = getSupabaseClient();
+        let tripStatus = "не перевірено";
+        try {
+          await upsertTrip(client, tripCode);
+          const { data, error } = await client.from("trips").select("*").eq("code", tripCode).maybeSingle();
+          if (error) throw error;
+          tripStatus = data ? "створено/знайдено" : "не знайдено після upsert";
+        } catch (error) {
+          tripStatus = `помилка trips: ${error.message}`;
+        }
+
+        const tables = await Promise.all([
+          readDiagnosticTable(client, "route_points", tripCode),
+          readDiagnosticTable(client, "tickets", tripCode),
+          readDiagnosticTable(client, "ticket_files", tripCode)
+        ]);
+        const schema = await auditSupabaseSchema(client, ["route_points", "tickets", "ticket_files"]);
+        const byName = Object.fromEntries(tables.map(item => [item.table, item]));
+        const lastTripCode = localStorage.getItem(SYNC_LAST_TRIP_KEY) || "";
+        const tripWarning = lastTripCode && lastTripCode !== tripCode
+          ? `<div class="soft small red"><strong>Попередження trip_code:</strong> останній synced trip_code <code>${escapeHtml(lastTripCode)}</code>, поточний <code>${escapeHtml(tripCode)}</code>.</div>`
+          : "";
+
+        setSyncDiagnostics(`
+          <div class="soft small"><strong>Supabase URL:</strong> ${escapeHtml(config.url || "(порожньо)")}</div>
+          <div class="soft small"><strong>trip_code:</strong> <code>${escapeHtml(tripCode)}</code></div>
+          ${tripWarning}
+          <div class="soft small"><strong>trip:</strong> ${escapeHtml(tripStatus)}</div>
+          <div class="soft small"><strong>Локально:</strong> route_points ${getRoutePoints().length}, tickets ${getBookings().length}, ticket_files ${getTicketFiles().length}</div>
+          <div class="soft small"><strong>Supabase:</strong> route_points ${byName.route_points.count}, tickets ${byName.tickets.count}, ticket_files ${byName.ticket_files.count}</div>
+          ${tables.map(result => `
+            <details ${result.ok ? "" : "open"}>
+              <summary>${escapeHtml(result.table)}: ${result.ok ? `${result.count} записів` : "помилка"}</summary>
+              ${result.error ? `<div class="soft small red">${escapeHtml(result.error)}</div>` : ""}
+              <pre class="soft small">${shortJSON(result.latest.map(rowPreview))}</pre>
+            </details>
+          `).join("")}
+          <details open>
+            <summary>Фактична схема / columns audit</summary>
+            <pre class="soft small">${shortJSON(schema)}</pre>
+          </details>
+        `);
+        addSyncLog("diagnostics", `route_points ${byName.route_points.count}, tickets ${byName.tickets.count}, ticket_files ${byName.ticket_files.count}`);
+      } catch (error) {
+        setSyncDiagnostics(`<div class="soft small red">${escapeHtml(error.message)}</div>`);
+        addSyncLog("diagnostics error", error.message);
+      }
+    }
+
+    async function auditSupabaseSchema(client, tables) {
+      const result = {};
+      for (const table of tables) {
+        result[table] = { selectStarColumns: [], informationSchemaColumns: [], errors: [] };
+        try {
+          const { data, error } = await client.from(table).select("*").limit(1);
+          if (error) throw error;
+          result[table].selectStarColumns = Object.keys(data?.[0] || {});
+        } catch (error) {
+          result[table].errors.push(`select *: ${error.message}`);
+        }
+        try {
+          const schemaClient = typeof client.schema === "function" ? client.schema("information_schema") : client;
+          const { data, error } = await schemaClient
+            .from("columns")
+            .select("table_name,column_name,data_type,is_nullable")
+            .eq("table_schema", "public")
+            .eq("table_name", table)
+            .order("ordinal_position", { ascending: true });
+          if (error) throw error;
+          result[table].informationSchemaColumns = data || [];
+        } catch (error) {
+          result[table].errors.push(`information_schema.columns: ${error.message}`);
+        }
+      }
+      return result;
+    }
+
+    async function createSyncTestRecord() {
+      try {
+        setSyncStatus("тестовий запис...");
+        const { client, tripCode } = getSupabaseClient();
+        await upsertTrip(client, tripCode);
+        const stamp = Date.now();
+        const routeId = `sync_test_route_${stamp}`;
+        const ticketId = `sync_test_ticket_${stamp}`;
+        const title = `SYNC_TEST_${stamp}`;
+        const routeRow = {
+          id: routeId,
+          trip_code: tripCode,
+          date: todayISO(),
+          time: "",
+          type: "train",
+          from_place: title,
+          to_place: "Supabase",
+          title,
+          address: "",
+          note: "Diagnostic test route point",
+          maps_url: "",
+          status: "підтверджено",
+          sort_order: 9999,
+          updated_at: nowISO()
+        };
+        const ticketRow = {
+          id: ticketId,
+          trip_code: tripCode,
+          type: "квиток",
+          title,
+          date: todayISO(),
+          related_point_id: routeId,
+          booking_number: title,
+          note: "Diagnostic test ticket",
+          updated_at: nowISO()
+        };
+        await cloudUpsert(client, "route_points", [routeRow]);
+        await cloudUpsert(client, "tickets", [ticketRow]);
+        const [routeCheck, ticketCheck] = await Promise.all([
+          client.from("route_points").select("*").eq("id", routeId).eq("trip_code", tripCode).maybeSingle(),
+          client.from("tickets").select("*").eq("id", ticketId).eq("trip_code", tripCode).maybeSingle()
+        ]);
+        if (routeCheck.error) throw new Error(`route_points readback: ${routeCheck.error.message}`);
+        if (ticketCheck.error) throw new Error(`tickets readback: ${ticketCheck.error.message}`);
+        if (!routeCheck.data || !ticketCheck.data) throw new Error("Тестові записи не прочитались назад.");
+        localStorage.setItem(SYNC_LAST_TRIP_KEY, tripCode);
+        addSyncLog("test write route_point", routeId);
+        addSyncLog("test write ticket", ticketId);
+        setSyncDiagnostics(`<div class="soft small"><strong>Тест OK:</strong> ${escapeHtml(title)} записано і прочитано назад у route_points та tickets.</div>`);
+        setSyncStatus("Supabase test OK");
+      } catch (error) {
+        setSyncStatus(`помилка тесту: ${error.message}`);
+        setSyncDiagnostics(`<div class="soft small red">${escapeHtml(error.message)}</div>`);
+        addSyncLog("test write error", error.message);
       }
     }
 
@@ -1860,12 +2285,20 @@
     async function hydrateSignedTicketFiles(client, files) {
       const hydrated = [];
       for (const file of files) {
-        if (!String(file.mimeType || "").startsWith("image/")) {
+        if (!file.storagePath) {
           hydrated.push(file);
           continue;
         }
         const { data, error } = await client.storage.from("camino-files").createSignedUrl(file.storagePath, 60 * 60);
         hydrated.push(error ? file : { ...file, signedUrl: data.signedUrl, signedUrlExpiresAt: new Date(Date.now() + 55 * 60 * 1000).toISOString() });
+      }
+      return hydrated;
+    }
+
+    async function hydrateAndCacheTicketFiles(client, files) {
+      const hydrated = await hydrateSignedTicketFiles(client, files);
+      for (const file of hydrated) {
+        if (file.signedUrl) await cacheCloudFile(file);
       }
       return hydrated;
     }
@@ -1916,23 +2349,54 @@
       await cloudUpsert(client, table, rows, onConflict);
     }
 
+    async function uploadLocalFilesToCloud(client, tripCode) {
+      let uploadedCount = 0;
+      for (const storeName of ["routeAttachments", "attachments"]) {
+        const files = await dbAll(storeName);
+        for (const file of files) {
+          if (file.cloudId || !file.blob) continue;
+          const uploaded = await trySaveTicketFileToSupabase(file.ownerId, file.blob, {
+            id: file.id,
+            kind: file.kind || "",
+            client,
+            tripCode,
+            silent: true
+          });
+          if (uploaded) {
+            await dbPut(storeName, { ...file, cloudId: file.id });
+            uploadedCount += 1;
+          }
+        }
+      }
+      if (uploadedCount) addSyncLog("завантажено локальні файли", `${uploadedCount}`);
+      return uploadedCount;
+    }
+
     async function uploadLocalToCloud() {
       try {
         setSyncStatus("Синхронізація…");
         const { client, tripCode } = getSupabaseClient();
         await upsertTrip(client, tripCode);
-        await cloudReplace(client, "route_points", tripCode, getRoutePoints().map((item, index) => routeToRow(item, index, tripCode)));
-        addSyncLog("записано маршрут", `${getRoutePoints().length} точок`);
-        await cloudReplace(client, "tickets", tripCode, getBookings().map(item => ticketToRow(item, tripCode)));
-        await cloudReplace(client, "ticket_files", tripCode, getTicketFiles().map(item => ticketFileToRow(item, tripCode)));
+        const storageUploaded = await uploadLocalFilesToCloud(client, tripCode);
+        const routeRows = getRoutePoints().map((item, index) => routeToRow(item, index, tripCode));
+        const ticketRows = getBookings().map(item => ticketToRow(item, tripCode));
+        const fileRows = getTicketFiles().map(item => ticketFileToRow(item, tripCode));
+        await cloudReplace(client, "route_points", tripCode, routeRows);
+        await cloudReplace(client, "tickets", tripCode, ticketRows);
+        await cloudReplace(client, "ticket_files", tripCode, fileRows);
         await cloudReplace(client, "expenses", tripCode, getExpenses().map(item => expenseToRow(item, tripCode)));
         await uploadNotes(client, tripCode);
         await uploadChecklists(client, tripCode);
+        localStorage.setItem(SYNC_LAST_TRIP_KEY, tripCode);
         setSyncStatus(syncedNowLabel());
         addSyncLog("синхронізовано", "локальні дані завантажено в хмару");
+        addSyncLog("uploaded route_points", `${routeRows.length}`);
+        addSyncLog("uploaded tickets", `${ticketRows.length}`);
+        addSyncLog("uploaded ticket_files", `${fileRows.length}`);
+        addSyncLog("storage uploaded files", `${storageUploaded}`);
       } catch (error) {
         setSyncStatus(`Помилка синхронізації: ${error.message}`);
-        addSyncLog("помилка", error.message);
+        addSyncLog("errors", error.message);
       }
     }
 
@@ -1946,19 +2410,148 @@
           cloudSelect(client, "ticket_files", tripCode),
           cloudSelect(client, "expenses", tripCode)
         ]);
-        localStorage.setItem(ROUTE_KEY, JSON.stringify(routes.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)).map(rowToRoute)));
-        localStorage.setItem(BOOKINGS_KEY, JSON.stringify(tickets.map(rowToTicket)));
-        saveTicketFiles(await hydrateSignedTicketFiles(client, ticketFiles.map(rowToTicketFile)), { markDirty: false });
-        localStorage.setItem("camino2026_expenses", JSON.stringify(expenses.map(rowToExpense)));
+        const routeMerge = mergeCloudRows(getRoutePoints(), routes.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)), rowToRoute);
+        const ticketMerge = mergeCloudRows(getBookings(), tickets, rowToTicket);
+        const expenseMerge = mergeCloudRows(getExpenses(), expenses, rowToExpense);
+        const fileMerge = mergeCloudRows(getTicketFiles(), ticketFiles, rowToTicketFile);
+        localStorage.setItem(ROUTE_KEY, JSON.stringify(routeMerge.items));
+        localStorage.setItem(BOOKINGS_KEY, JSON.stringify(ticketMerge.items));
+        saveTicketFiles(await hydrateAndCacheTicketFiles(client, fileMerge.items), { markDirty: false });
+        localStorage.setItem("camino2026_expenses", JSON.stringify(expenseMerge.items));
         await pullNotes(client, tripCode);
         await pullChecklists(client, tripCode);
+        localStorage.setItem(SYNC_LAST_TRIP_KEY, tripCode);
         setSyncStatus(syncedNowLabel());
         addSyncLog("прочитано маршрут", `${routes.length} точок`);
         addSyncLog("синхронізовано", "хмарні дані підтягнуто локально");
+        addSyncLog("cloud route_points received", `${routes.length}`);
+        addSyncLog("cloud tickets received", `${tickets.length}`);
+        addSyncLog("cloud ticket_files received", `${ticketFiles.length}`);
+        addSyncLog("local route_points after merge", `${routeMerge.items.length}`);
+        addSyncLog("local tickets after merge", `${ticketMerge.items.length}`);
+        addSyncLog("local file metadata after merge", `${fileMerge.items.length}`);
+        addSyncLog("downloaded route_points", `${routes.length} (${routeMerge.added} added, ${routeMerge.updated} updated)`);
+        addSyncLog("downloaded tickets", `${tickets.length} (${ticketMerge.added} added, ${ticketMerge.updated} updated)`);
+        addSyncLog("downloaded ticket_files", `${ticketFiles.length} (${fileMerge.added} added, ${fileMerge.updated} updated)`);
         refresh();
+        logRenderedTicketCards();
       } catch (error) {
         setSyncStatus(`Помилка синхронізації: ${error.message}`);
-        addSyncLog("помилка", error.message);
+        addSyncLog("errors", error.message);
+      }
+    }
+
+    function mergeCloudRows(localItems, cloudRows, rowToLocal) {
+      const local = [...localItems];
+      let added = 0;
+      let updated = 0;
+      cloudRows.forEach(row => {
+        const incoming = rowToLocal(row);
+        const index = local.findIndex(item => String(item.id) === String(incoming.id));
+        if (index === -1) {
+          local.push(incoming);
+          added += 1;
+        } else {
+          local[index] = { ...local[index], ...incoming };
+          updated += 1;
+        }
+      });
+      return { items: local, added, updated };
+    }
+
+    function renderedTicketCardCount() {
+      return document.querySelectorAll("#screen-bookings article.point").length;
+    }
+
+    function logRenderedTicketCards() {
+      addSyncLog("rendered ticket cards", `${renderedTicketCardCount()}`);
+    }
+
+    async function clearLocalAndRestoreFromSupabase() {
+      if (!confirm("Очистити локальні дані цього браузера і відновити їх із Supabase для поточного trip_code?")) return;
+      try {
+        setSyncStatus("очищення локальних даних...");
+        [
+          ROUTE_KEY,
+          BOOKINGS_KEY,
+          TICKET_FILES_KEY,
+          "camino2026_expenses",
+          "camino2026_notes",
+          "camino2026_serhii",
+          "camino2026_oksana",
+          "camino2026_shared",
+          "camino2026_med"
+        ].forEach(key => localStorage.removeItem(key));
+        await Promise.all([dbClear("routeAttachments"), dbClear("attachments")]);
+        addSyncLog("local cleared", "route_points, tickets, ticket_files, checklists, notes, expenses, IndexedDB files");
+        await forceDownloadFromSupabase({ replaceLocal: true });
+      } catch (error) {
+        setSyncStatus(`помилка очищення: ${error.message}`);
+        addSyncLog("errors", error.message);
+      }
+    }
+
+    async function forceDownloadFromSupabase(options = {}) {
+      try {
+        setSyncStatus("примусове завантаження...");
+        const { client, tripCode } = getSupabaseClient();
+        await upsertTrip(client, tripCode);
+        const [routes, tickets, ticketFiles, expenses, checklistsRows, notesResult] = await Promise.all([
+          cloudSelect(client, "route_points", tripCode),
+          cloudSelect(client, "tickets", tripCode),
+          cloudSelect(client, "ticket_files", tripCode),
+          cloudSelect(client, "expenses", tripCode),
+          cloudSelect(client, "checklists", tripCode),
+          client.from("notes").select("*").eq("trip_code", tripCode).maybeSingle()
+        ]);
+        if (notesResult.error) throw new Error(`notes: ${notesResult.error.message}`);
+        const routeBase = options.replaceLocal ? [] : getRoutePoints();
+        const ticketBase = options.replaceLocal ? [] : getBookings();
+        const fileBase = options.replaceLocal ? [] : getTicketFiles();
+        const expenseBase = options.replaceLocal ? [] : getExpenses();
+        const routeMerge = mergeCloudRows(routeBase, routes.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)), rowToRoute);
+        const ticketMerge = mergeCloudRows(ticketBase, tickets, rowToTicket);
+        const fileMerge = mergeCloudRows(fileBase, ticketFiles, rowToTicketFile);
+        const expenseMerge = mergeCloudRows(expenseBase, expenses, rowToExpense);
+        localStorage.setItem(ROUTE_KEY, JSON.stringify(routeMerge.items));
+        localStorage.setItem(BOOKINGS_KEY, JSON.stringify(ticketMerge.items));
+        saveTicketFiles(await hydrateAndCacheTicketFiles(client, fileMerge.items), { markDirty: false });
+        localStorage.setItem("camino2026_expenses", JSON.stringify(expenseMerge.items));
+        checklistsRows.forEach(row => {
+          localStorage.setItem(row.list_key, JSON.stringify(row.state || []));
+          setLocalUpdated("checklists", row.list_key, row.updated_at || nowISO());
+        });
+        if (notesResult.data) {
+          localStorage.setItem("camino2026_notes", notesResult.data.content || "");
+          setLocalUpdated("notes", "", notesResult.data.updated_at || nowISO());
+        }
+        localStorage.setItem(SYNC_LAST_TRIP_KEY, tripCode);
+        setSyncStatus("примусове завантаження завершено");
+        addSyncLog("cloud route_points received", `${routes.length}`);
+        addSyncLog("cloud tickets received", `${tickets.length}`);
+        addSyncLog("cloud ticket_files received", `${ticketFiles.length}`);
+        addSyncLog("local route_points after merge", `${routeMerge.items.length}`);
+        addSyncLog("local tickets after merge", `${ticketMerge.items.length}`);
+        addSyncLog("local file metadata after merge", `${fileMerge.items.length}`);
+        addSyncLog("downloaded route_points", `${routes.length} (${routeMerge.added} added, ${routeMerge.updated} updated)`);
+        addSyncLog("downloaded tickets", `${tickets.length} (${ticketMerge.added} added, ${ticketMerge.updated} updated)`);
+        addSyncLog("downloaded ticket_files", `${ticketFiles.length} (${fileMerge.added} added, ${fileMerge.updated} updated)`);
+        addSyncLog("downloaded checklists", `${checklistsRows.length}`);
+        addSyncLog("downloaded expenses", `${expenses.length} (${expenseMerge.added} added, ${expenseMerge.updated} updated)`);
+        const reportHtml = `
+          <div class="soft small"><strong>Force Download OK:</strong></div>
+          <div class="soft small">route_points: ${routes.length} (${routeMerge.added} added, ${routeMerge.updated} updated)</div>
+          <div class="soft small">tickets: ${tickets.length} (${ticketMerge.added} added, ${ticketMerge.updated} updated)</div>
+          <div class="soft small">ticket_files: ${ticketFiles.length} (${fileMerge.added} added, ${fileMerge.updated} updated)</div>
+          <div class="soft small">checklists: ${checklistsRows.length}, notes: ${notesResult.data ? 1 : 0}, expenses: ${expenses.length}</div>
+        `;
+        refresh();
+        setSyncDiagnostics(reportHtml);
+        logRenderedTicketCards();
+      } catch (error) {
+        setSyncStatus(`Помилка синхронізації: ${error.message}`);
+        setSyncDiagnostics(`<div class="soft small red">${escapeHtml(error.message)}</div>`);
+        addSyncLog("errors", error.message);
       }
     }
 
@@ -1976,19 +2569,22 @@
         setSyncStatus("Синхронізація…");
         const { client, tripCode } = getSupabaseClient();
         await upsertTrip(client, tripCode);
+        const storageUploaded = await uploadLocalFilesToCloud(client, tripCode);
 
         const cloudRoutes = await cloudSelect(client, "route_points", tripCode);
         const localRoutes = getRoutePoints();
         const routeResult = mergeByUpdatedAt(localRoutes, cloudRoutes, "route_points", rowToRoute, (item, index) => routeToRow(item, index, tripCode));
         localStorage.setItem(ROUTE_KEY, JSON.stringify(routeResult.local));
         await cloudUpsert(client, "route_points", routeResult.pushRows);
-        addSyncLog("записано маршрут", `${routeResult.pushRows.length} локальних оновлень`);
-        addSyncLog("прочитано маршрут", `${cloudRoutes.length} хмарних записів`);
+        addSyncLog("uploaded route_points", `${routeResult.pushRows.length}`);
+        addSyncLog("downloaded route_points", `${cloudRoutes.length}`);
 
         const cloudTickets = await cloudSelect(client, "tickets", tripCode);
         const ticketResult = mergeByUpdatedAt(getBookings(), cloudTickets, "tickets", rowToTicket, item => ticketToRow(item, tripCode));
         localStorage.setItem(BOOKINGS_KEY, JSON.stringify(ticketResult.local));
         await cloudUpsert(client, "tickets", ticketResult.pushRows);
+        addSyncLog("uploaded tickets", `${ticketResult.pushRows.length}`);
+        addSyncLog("downloaded tickets", `${cloudTickets.length}`);
 
         const cloudTicketFiles = await cloudSelect(client, "ticket_files", tripCode);
         const localTicketFiles = getTicketFiles();
@@ -2014,7 +2610,10 @@
           })
           .map(file => ticketFileToRow(file, tripCode));
         await cloudUpsert(client, "ticket_files", localFileRows);
-        saveTicketFiles(await hydrateSignedTicketFiles(client, mergedFiles), { markDirty: false });
+        saveTicketFiles(await hydrateAndCacheTicketFiles(client, mergedFiles), { markDirty: false });
+        addSyncLog("uploaded ticket_files", `${localFileRows.length}`);
+        addSyncLog("downloaded ticket_files", `${cloudTicketFiles.length}`);
+        addSyncLog("storage uploaded files", `${storageUploaded}`);
 
         const cloudExpenses = await cloudSelect(client, "expenses", tripCode);
         const expenseResult = mergeByUpdatedAt(getExpenses(), cloudExpenses, "expenses", rowToExpense, item => expenseToRow(item, tripCode));
@@ -2023,12 +2622,17 @@
 
         await syncNotes(client, tripCode);
         await syncChecklists(client, tripCode);
+        localStorage.setItem(SYNC_LAST_TRIP_KEY, tripCode);
         setSyncStatus(syncedNowLabel());
+        addSyncLog("local route_points after merge", `${routeResult.local.length}`);
+        addSyncLog("local tickets after merge", `${ticketResult.local.length}`);
+        addSyncLog("local file metadata after merge", `${mergedFiles.length}`);
         addSyncLog(options.silent ? "autosync" : "синхронізовано", "lastUpdated wins");
         refresh();
+        logRenderedTicketCards();
       } catch (error) {
         setSyncStatus("Помилка синхронізації");
-        addSyncLog("помилка", error.message);
+        addSyncLog("errors", error.message);
         if (options.silent) throw error;
       } finally {
         isSyncing = false;
@@ -2100,7 +2704,7 @@
       return Object.values(checklists).map(list => {
         const updated_at = getLocalUpdated("checklists", list.storage) === "1970-01-01T00:00:00.000Z" ? nowISO() : getLocalUpdated("checklists", list.storage);
         setLocalUpdated("checklists", list.storage, updated_at);
-        return { trip_code: tripCode, list_key: list.storage, state: readJSON(list.storage, []), updated_at };
+        return { trip_code: tripCode, list_key: list.storage, state: getChecklistState(list), updated_at };
       });
     }
 
