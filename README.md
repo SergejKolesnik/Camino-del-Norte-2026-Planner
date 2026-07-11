@@ -26,6 +26,24 @@ Supabase URL/key не хардкодяться. Їх потрібно ввест
 
 Мобільний офлайн travel-planner / PWA без фреймворків. Основний режим роботи локальний: `localStorage` + `IndexedDB`. Supabase-синхронізація є необов'язковою: текстові дані синхронізуються через таблиці, а файли квитків - через Supabase Storage bucket `camino-files`.
 
+## Route point sync integrity
+
+Канонічний код подорожі: `camino-2026`. Старий код `camino2026` застосунок автоматично нормалізує до `camino-2026`.
+
+Для очищення вже створених дублікатів у Supabase використайте файл:
+
+```text
+supabase-route-point-integrity.sql
+```
+
+Порядок:
+
+1. Запустіть preview-запити з файлу в Supabase SQL Editor.
+2. Перевірте manual-review кандидати.
+3. Запустіть transaction-блок.
+4. У застосунку відкрийте `☁️ Синхр.` → `Перевірити цілісність маршруту`.
+5. Виконайте кілька `Download` / `Sync` і переконайтесь, що кількість `route_points` не зростає.
+
 ## Запуск
 
 PWA потрібно відкривати через HTTP, бо service worker не працює з `file://`.

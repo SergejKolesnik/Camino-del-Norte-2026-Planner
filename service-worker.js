@@ -1,4 +1,4 @@
-const CACHE_NAME = "camino-del-norte-2026-v14-autosync-ticket-cleanup";
+const CACHE_NAME = "camino-del-norte-2026-v15-route-point-sync-integrity";
 const APP_SHELL = [
   "./",
   "./index.html",
