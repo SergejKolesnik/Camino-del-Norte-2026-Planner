@@ -3019,6 +3019,7 @@
           <div class="soft small">route_points: ${routes.length} (${routeMerge.added} added, ${routeMerge.updated} updated, ${routeDedupe.removed} duplicates removed)</div>
           <div class="soft small">tickets: ${tickets.length} (${ticketMerge.added} added, ${ticketMerge.updated} updated)</div>
           <div class="soft small">ticket_files: ${ticketFiles.length} (${fileMerge.added} added, ${fileMerge.updated} updated)</div>
+          <div class="soft small">remapped tickets: ${remappedTickets.remapped}, remapped ticket_files: ${remappedTicketFiles.remapped}</div>
           <div class="soft small">checklists: ${checklistsRows.length}, notes: ${notesResult.data ? 1 : 0}, expenses: ${expenses.length}</div>
         `;
         refresh();
