@@ -5,7 +5,8 @@
 -- Canonical trip_code expression used in every duplicate_key:
 -- case when rp.trip_code = 'camino2026' then 'camino-2026' else rp.trip_code end
 
--- PREVIEW 1: exact duplicate groups that are safe candidates for automatic cleanup.
+-- PREVIEW 1: exact duplicate groups that are candidates for cleanup.
+-- This is broader than the TRANSACTION delete set. Use the DRY RUN output as the exact cleanup preview.
 with enriched as (
   select
     rp.*,
@@ -231,9 +232,19 @@ order by m.canonical_id, m.duplicate_id;
 select
   rp.id as test_route_point_id,
   dm.canonical_id,
+  exists (
+    select 1
+    from route_point_duplicate_map_dry_run canonical_dm
+    where canonical_dm.canonical_id = rp.id
+  ) as is_duplicate_canonical,
   coalesce(t.linked_tickets, 0) as linked_tickets,
   coalesce(tf.linked_files, 0) as linked_files,
   case
+    when exists (
+      select 1
+      from route_point_duplicate_map_dry_run canonical_dm
+      where canonical_dm.canonical_id = rp.id
+    ) then 'protected: test-looking route_point is canonical for duplicate cleanup'
     when dm.canonical_id is not null then 'will relink to canonical route_point'
     when coalesce(t.linked_tickets, 0) = 0 and coalesce(tf.linked_files, 0) = 0 then 'orphan test route_point, safe to delete'
     else 'manual review: linked data exists but canonical route_point cannot be determined'
@@ -329,9 +340,22 @@ create temporary table route_point_test_map as
 select
   rp.id as test_route_point_id,
   dm.canonical_id,
+  exists (
+    select 1
+    from route_point_duplicate_map canonical_dm
+    where canonical_dm.canonical_id = rp.id
+  ) as is_duplicate_canonical,
   coalesce(t.linked_tickets, 0) as linked_tickets,
   coalesce(tf.linked_files, 0) as linked_files,
-  (coalesce(t.linked_tickets, 0) = 0 and coalesce(tf.linked_files, 0) = 0) as is_orphan,
+  (
+    coalesce(t.linked_tickets, 0) = 0
+    and coalesce(tf.linked_files, 0) = 0
+    and not exists (
+      select 1
+      from route_point_duplicate_map canonical_dm
+      where canonical_dm.canonical_id = rp.id
+    )
+  ) as is_orphan,
   (dm.canonical_id is null and (coalesce(t.linked_tickets, 0) > 0 or coalesce(tf.linked_files, 0) > 0)) as needs_manual_review
 from public.route_points rp
 left join route_point_duplicate_map dm on dm.duplicate_id = rp.id
@@ -392,7 +416,37 @@ select
   (select tickets_relinked from tickets_relinked_summary) as tickets_relinked,
   (select count(*) from route_point_duplicate_map) as duplicate_route_points_planned_for_delete,
   (select count(*) from route_point_test_map where is_orphan and canonical_id is null) as orphan_test_route_points_planned_for_delete,
+  (select count(*) from route_point_test_map where is_duplicate_canonical) as protected_test_canonical_route_points,
   (select count(*) from route_point_test_map where needs_manual_review) as manual_review_remaining;
+
+do $$
+begin
+  if exists (
+    select 1
+    from public.ticket_files tf
+    join route_point_duplicate_map m on m.duplicate_id = tf.ticket_id
+  ) then
+    raise exception 'Cannot delete duplicate route_points: ticket_files still reference route_point ids planned for deletion.';
+  end if;
+
+  if exists (
+    select 1
+    from public.tickets t
+    join route_point_duplicate_map m on m.duplicate_id = t.related_point_id
+  ) then
+    raise exception 'Cannot delete duplicate route_points: tickets still reference route_point ids planned for deletion.';
+  end if;
+
+  if exists (
+    select 1
+    from route_point_test_map tm
+    where tm.is_orphan
+      and tm.canonical_id is null
+      and tm.is_duplicate_canonical
+  ) then
+    raise exception 'Cannot delete orphan test route_points: at least one is canonical for duplicate cleanup.';
+  end if;
+end $$;
 
 insert into public.trips (code, title)
 values ('camino-2026', 'Camino del Norte 2026')
@@ -446,6 +500,7 @@ with deleted as (
   where rp.id = tm.test_route_point_id
     and tm.is_orphan
     and tm.canonical_id is null
+    and not tm.is_duplicate_canonical
   returning 1
 )
 select count(*) as test_records_deleted from deleted;
