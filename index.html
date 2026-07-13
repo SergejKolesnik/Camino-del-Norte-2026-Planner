@@ -952,6 +952,19 @@
       if (JSON.stringify(nextFiles) !== JSON.stringify(files)) saveTicketFiles(nextFiles);
     }
 
+    function remapRouteLinkedRows(rows, idMap, fieldName) {
+      if (!idMap.size) return { rows, remapped: 0 };
+      let remapped = 0;
+      const nextRows = rows.map(row => {
+        const currentId = String(row[fieldName] || "");
+        if (!idMap.has(currentId)) return row;
+        remapped += 1;
+        return { ...row, [fieldName]: idMap.get(currentId), updated_at: nowISO() };
+      });
+      if (remapped) addSyncLog(`${fieldName} remapped to canonical route_point`, `${remapped}`);
+      return { rows: nextRows, remapped };
+    }
+
     function dedupeRoutePoints(options = {}) {
       const points = Array.isArray(options.points) ? options.points : getRoutePoints();
       const byId = new Map();
@@ -2867,10 +2880,12 @@
         const routeBase = routeMergeBase(routes);
         const routeMerge = mergeCloudRows(routeBase, routes.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)), rowToRoute);
         const routeDedupe = dedupeRoutePoints({ points: routeMerge.items, preview: true, applyReferenceMap: true, tickets: [...getBookings(), ...tickets], ticketFiles: [...getTicketFiles(), ...ticketFiles] });
+        const remappedTickets = remapRouteLinkedRows(tickets, routeDedupe.idMap, "related_point_id");
+        const remappedTicketFiles = remapRouteLinkedRows(ticketFiles, routeDedupe.idMap, "ticket_id");
         const sortedRoutes = sortTimelineEvents(routeDedupe.items);
-        const ticketMerge = mergeCloudRows(getBookings(), tickets, rowToTicket);
+        const ticketMerge = mergeCloudRows(getBookings(), remappedTickets.rows, rowToTicket);
         const expenseMerge = mergeCloudRows(getExpenses(), expenses, rowToExpense);
-        const fileMerge = mergeCloudRows(getTicketFiles(), ticketFiles, rowToTicketFile);
+        const fileMerge = mergeCloudRows(getTicketFiles(), remappedTicketFiles.rows, rowToTicketFile);
         localStorage.setItem(ROUTE_KEY, JSON.stringify(sortedRoutes));
         localStorage.setItem(BOOKINGS_KEY, JSON.stringify(ticketMerge.items));
         saveTicketFiles(await hydrateAndCacheTicketFiles(client, fileMerge.items), { markDirty: false });
@@ -2968,9 +2983,11 @@
         const expenseBase = options.replaceLocal ? [] : getExpenses();
         const routeMerge = mergeCloudRows(routeBase, routes.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)), rowToRoute);
         const routeDedupe = dedupeRoutePoints({ points: routeMerge.items, preview: true, applyReferenceMap: true, tickets: [...ticketBase, ...tickets], ticketFiles: [...fileBase, ...ticketFiles] });
+        const remappedTickets = remapRouteLinkedRows(tickets, routeDedupe.idMap, "related_point_id");
+        const remappedTicketFiles = remapRouteLinkedRows(ticketFiles, routeDedupe.idMap, "ticket_id");
         const sortedRoutes = sortTimelineEvents(routeDedupe.items);
-        const ticketMerge = mergeCloudRows(ticketBase, tickets, rowToTicket);
-        const fileMerge = mergeCloudRows(fileBase, ticketFiles, rowToTicketFile);
+        const ticketMerge = mergeCloudRows(ticketBase, remappedTickets.rows, rowToTicket);
+        const fileMerge = mergeCloudRows(fileBase, remappedTicketFiles.rows, rowToTicketFile);
         const expenseMerge = mergeCloudRows(expenseBase, expenses, rowToExpense);
         localStorage.setItem(ROUTE_KEY, JSON.stringify(sortedRoutes));
         localStorage.setItem(BOOKINGS_KEY, JSON.stringify(ticketMerge.items));
@@ -3039,13 +3056,15 @@
         const localRoutes = localRouteDedupe.items;
         const routeResult = mergeByUpdatedAt(localRoutes, cloudRoutes, "route_points", rowToRoute, (item, index) => routeToRow(item, index, tripCode));
         const routeDedupe = dedupeRoutePoints({ points: routeResult.local, preview: true, applyReferenceMap: true, tickets: [...getBookings(), ...cloudTickets], ticketFiles: [...getTicketFiles(), ...cloudTicketFiles] });
+        const remappedCloudTickets = remapRouteLinkedRows(cloudTickets, routeDedupe.idMap, "related_point_id");
+        const remappedCloudTicketFiles = remapRouteLinkedRows(cloudTicketFiles, routeDedupe.idMap, "ticket_id");
         const sortedRoutes = sortTimelineEvents(routeDedupe.items);
         localStorage.setItem(ROUTE_KEY, JSON.stringify(sortedRoutes));
         const routeUpload = await upsertRoutePointsToSupabase(client, tripCode, routeResult.pushRows.map(rowToRoute));
         addSyncLog("uploaded route_points", `${routeUpload.inserted + routeUpload.updated}`);
         addSyncLog("downloaded route_points", `${cloudRoutes.length}`);
 
-        const ticketResult = mergeByUpdatedAt(getBookings(), cloudTickets, "tickets", rowToTicket, item => ticketToRow(item, tripCode));
+        const ticketResult = mergeByUpdatedAt(getBookings(), remappedCloudTickets.rows, "tickets", rowToTicket, item => ticketToRow(item, tripCode));
         localStorage.setItem(BOOKINGS_KEY, JSON.stringify(ticketResult.local));
         await cloudUpsert(client, "tickets", ticketResult.pushRows);
         addSyncLog("uploaded tickets", `${ticketResult.pushRows.length}`);
@@ -3053,7 +3072,7 @@
 
         const localTicketFiles = getTicketFiles();
         const localFileMap = new Map(localTicketFiles.map(file => [String(file.id), file]));
-        const cloudFileMap = new Map(cloudTicketFiles.map(file => [String(file.id), rowToTicketFile(file)]));
+        const cloudFileMap = new Map(remappedCloudTicketFiles.rows.map(file => [String(file.id), rowToTicketFile(file)]));
         const mergedFiles = [...localTicketFiles];
         cloudFileMap.forEach((file, id) => {
           const localFile = localFileMap.get(id);
@@ -3073,7 +3092,11 @@
             return !cloudFile || !isCloudNewer(file.updatedAt, cloudFile.updatedAt);
           })
           .map(file => ticketFileToRow(file, tripCode));
-        await cloudUpsert(client, "ticket_files", localFileRows);
+        const remappedCloudFileRows = remappedCloudTicketFiles.remapped
+          ? remappedCloudTicketFiles.rows.filter((row, index) => String(row.ticket_id || "") !== String(cloudTicketFiles[index]?.ticket_id || ""))
+          : [];
+        await cloudUpsert(client, "ticket_files", [...localFileRows, ...remappedCloudFileRows]);
+        if (remappedCloudFileRows.length) addSyncLog("uploaded remapped ticket_files", `${remappedCloudFileRows.length}`);
         saveTicketFiles(await hydrateAndCacheTicketFiles(client, mergedFiles), { markDirty: false });
         addSyncLog("uploaded ticket_files", `${localFileRows.length}`);
         addSyncLog("downloaded ticket_files", `${cloudTicketFiles.length}`);
