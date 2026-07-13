@@ -452,6 +452,8 @@
     const SYNC_LAST_TRIP_KEY = "camino2026_last_synced_trip_code";
     const TIMELINE_AUTO_SORT_KEY = "camino2026_timeline_auto_sort";
     const TICKET_FILES_KEY = "camino2026_ticket_files";
+    const CANONICAL_TRIP_CODE = "camino-2026";
+    const LEGACY_TRIP_CODES = new Set(["camino2026"]);
     const AUTOSYNC_DELAY = 2500;
     let autosyncTimer = null;
     let isSyncing = false;
@@ -484,6 +486,11 @@
       point("2026-08-06", "", "літак", "Málaga", "Варшава", "Málaga → Warszawa", "Málaga Airport / Warszawa", "Дата може бути 6 або 7 серпня.", "", "заплановано"),
       point("2026-08-07", "", "поїзд", "Варшава", "Україна / Дніпро", "", "Warszawa / Дніпро", "Повернення додому.", "", "заплановано")
     ];
+    defaultRoutePoints.forEach((item, index) => {
+      item.id = stableBaseRoutePointId(item, index);
+      item.sortOrder = index;
+      item.createdAt = "2026-01-01T00:00:00.000Z";
+    });
 
     const checklists = {
       serhii: { title: "Чек-лист Сергія", storage: "camino2026_serhii", items: ["Закордонний паспорт", "Банківська картка + трохи готівки", "Рюкзак 25-30 л", "Чохол від дощу на рюкзак", "Розношені трекінгові кросівки", "Легкі сандалі / друге взуття", "2 футболки для ходьби", "2 пари шортів", "Легкі штани", "Фліс / легка кофта", "Вітрівка або легкий дощовик", "Кепка / панама", "Баф", "3 пари трекінгових шкарпеток", "3 комплекти білизни", "Одяг для сну", "Плавки для Таріфи", "Телефон + зарядний пристрій", "Кабель USB", "Павербанк", "Навушники", "Сонцезахисні окуляри"] },
@@ -521,6 +528,62 @@
 
     function point(date, time, type, from, to, title, address, note, mapsUrl, status) {
       return { id: generateId(), date, time, type, from, to, title, address, note, mapsUrl, status, createdAt: nowISO() };
+    }
+
+    function stableBaseRoutePointId(item, index) {
+      const key = [index, item.date, item.time, item.type, item.from, item.to, item.title].map(value => String(value || "").trim().toLowerCase()).join("|");
+      let hash = 0;
+      for (let i = 0; i < key.length; i += 1) hash = ((hash << 5) - hash + key.charCodeAt(i)) | 0;
+      return `base_route_${index}_${Math.abs(hash).toString(36)}`;
+    }
+
+    function cleanText(value) {
+      return String(value ?? "").trim();
+    }
+
+    function nullableText(value) {
+      const text = cleanText(value);
+      return text || null;
+    }
+
+    function normalizeTripCode(value = "") {
+      const code = cleanText(value);
+      if (!code || LEGACY_TRIP_CODES.has(code)) return CANONICAL_TRIP_CODE;
+      return code;
+    }
+
+    function isLegacyTripCode(value = "") {
+      return LEGACY_TRIP_CODES.has(cleanText(value));
+    }
+
+    function routeGeneratedTitle(item = {}) {
+      const from = cleanText(item.from ?? item.from_place);
+      const to = cleanText(item.to ?? item.to_place);
+      return from && to ? `${from} → ${to}` : "";
+    }
+
+    function normalizeRoutePointForSave(item = {}) {
+      const normalized = {
+        ...item,
+        id: cleanText(item.id),
+        date: cleanText(item.date),
+        time: cleanText(item.time),
+        type: cleanText(item.type),
+        from: cleanText(item.from),
+        to: cleanText(item.to),
+        title: cleanText(item.title),
+        address: cleanText(item.address),
+        note: cleanText(item.note),
+        mapsUrl: cleanText(item.mapsUrl),
+        status: cleanText(item.status) || "заплановано"
+      };
+      if (!normalized.title) normalized.title = routeGeneratedTitle(normalized);
+      if (!normalized.title && !normalized.from && !normalized.to && !normalized.note) return null;
+      return normalized;
+    }
+
+    function isEmptyRoutePoint(item = {}) {
+      return !cleanText(item.title) && !cleanText(item.from) && !cleanText(item.to) && !cleanText(item.note);
     }
 
     function escapeHtml(value = "") {
@@ -644,7 +707,8 @@
     }
 
     function getSyncConfig() {
-      return readJSON(SYNC_CONFIG_KEY, { url: "", anonKey: "", tripCode: "camino-2026" });
+      const config = readJSON(SYNC_CONFIG_KEY, { url: "", anonKey: "", tripCode: CANONICAL_TRIP_CODE });
+      return { ...config, tripCode: normalizeTripCode(config.tripCode || CANONICAL_TRIP_CODE) };
     }
 
     function getSyncSettings() {
@@ -672,7 +736,7 @@
       const config = getSyncConfig();
       if (!config.url || !config.anonKey || !config.tripCode) return null;
       if (!window.supabase || typeof window.supabase.createClient !== "function") return null;
-      return { client: window.supabase.createClient(config.url, config.anonKey), tripCode: config.tripCode };
+      return { client: window.supabase.createClient(config.url, config.anonKey), tripCode: normalizeTripCode(config.tripCode) };
     }
 
     function scheduleAutosync() {
@@ -727,6 +791,18 @@
       return defaultRoutePoints;
     }
 
+    function getSavedRoutePoints() {
+      const saved = readJSON(ROUTE_KEY, null);
+      return Array.isArray(saved) ? saved : [];
+    }
+
+    function routeMergeBase(cloudRows = [], options = {}) {
+      if (options.replaceLocal) return [];
+      const saved = getSavedRoutePoints();
+      if (saved.length) return saved;
+      return Array.isArray(cloudRows) && cloudRows.length ? [] : getRoutePoints();
+    }
+
     function isTimelineAutoSortEnabled() {
       return readJSON(TIMELINE_AUTO_SORT_KEY, true) !== false;
     }
@@ -737,8 +813,9 @@
     }
 
     function saveRoutePoints(points, options = {}) {
-      localStorage.setItem(ROUTE_KEY, JSON.stringify(points));
-      if (options.markDirty !== false) touchMany("route_points", points.map(item => item.id));
+      const normalized = points.map(item => normalizeRoutePointForSave(item)).filter(Boolean);
+      localStorage.setItem(ROUTE_KEY, JSON.stringify(normalized));
+      if (options.markDirty !== false) touchMany("route_points", normalized.map(item => item.id));
       refresh();
     }
 
@@ -840,6 +917,28 @@
       return [meta.date, meta.time, type, route].join("|");
     }
 
+    function routeLinkedTickets(id, options = {}) {
+      const source = Array.isArray(options.tickets) ? options.tickets : getBookings();
+      return source.filter(item => String(item.routePointId || item.related_point_id || "") === String(id));
+    }
+
+    function routeLinkedFiles(id, options = {}) {
+      const source = Array.isArray(options.ticketFiles) ? options.ticketFiles : getTicketFiles();
+      return source.filter(item => String(item.ticketId || item.ticket_id || "") === String(id));
+    }
+
+    function canAutoMergeSemanticRoute(a = {}, b = {}, options = {}) {
+      if (String(a.id) === String(b.id)) return true;
+      const aMeta = normalizeTimelineDateTime(a);
+      const bMeta = normalizeTimelineDateTime(b);
+      const aNote = cleanText(a.note);
+      const bNote = cleanText(b.note);
+      if (!aMeta.hasTime && !bMeta.hasTime && aNote && bNote && aNote !== bNote) return false;
+      if (routeLinkedFiles(a.id, options).length && routeLinkedFiles(b.id, options).length) return false;
+      if (routeLinkedTickets(a.id, options).length && routeLinkedTickets(b.id, options).length) return false;
+      return true;
+    }
+
     function remapRouteReferences(idMap) {
       if (!idMap.size) return;
       const bookings = getBookings();
@@ -851,6 +950,19 @@
       const files = getTicketFiles();
       const nextFiles = files.map(file => idMap.has(file.ticketId) ? { ...file, ticketId: idMap.get(file.ticketId), updatedAt: nowISO() } : file);
       if (JSON.stringify(nextFiles) !== JSON.stringify(files)) saveTicketFiles(nextFiles);
+    }
+
+    function remapRouteLinkedRows(rows, idMap, fieldName) {
+      if (!idMap.size) return { rows, remapped: 0 };
+      let remapped = 0;
+      const nextRows = rows.map(row => {
+        const currentId = String(row[fieldName] || "");
+        if (!idMap.has(currentId)) return row;
+        remapped += 1;
+        return { ...row, [fieldName]: idMap.get(currentId), updated_at: nowISO() };
+      });
+      if (remapped) addSyncLog(`${fieldName} remapped to canonical route_point`, `${remapped}`);
+      return { rows: nextRows, remapped };
     }
 
     function dedupeRoutePoints(options = {}) {
@@ -867,7 +979,9 @@
           return;
         }
         const smartKey = smartRouteKey(point);
-        const existingIndex = byId.has(id) ? byId.get(id) : (smartKey && bySmartKey.has(smartKey) ? bySmartKey.get(smartKey) : -1);
+        const semanticIndex = smartKey && bySmartKey.has(smartKey) ? bySmartKey.get(smartKey) : -1;
+        const canMergeSemantic = semanticIndex !== -1 && canAutoMergeSemanticRoute(deduped[semanticIndex], point, options);
+        const existingIndex = byId.has(id) ? byId.get(id) : (canMergeSemantic ? semanticIndex : -1);
         if (existingIndex === -1) {
           const index = deduped.length;
           byId.set(id, index);
@@ -1230,11 +1344,15 @@
 
     function renderSync() {
       const config = getSyncConfig();
+      const rawConfig = readJSON(SYNC_CONFIG_KEY, { url: "", anonKey: "", tripCode: CANONICAL_TRIP_CODE });
       const settings = getSyncSettings();
       const status = localStorage.getItem(SYNC_STATUS_KEY) || (navigator.onLine ? "офлайн fallback активний" : "офлайн");
       const lastTripCode = localStorage.getItem(SYNC_LAST_TRIP_KEY) || "";
       const tripWarning = lastTripCode && lastTripCode !== config.tripCode
         ? `<div class="soft small red"><strong>Увага:</strong> остання синхронізація була з trip_code <code>${escapeHtml(lastTripCode)}</code>, зараз вибрано <code>${escapeHtml(config.tripCode || "camino-2026")}</code>.</div>`
+        : "";
+      const legacyTripWarning = isLegacyTripCode(rawConfig.tripCode)
+        ? `<div class="soft small red"><strong>trip_code оновлено:</strong> старий <code>camino2026</code> автоматично використовується як <code>${CANONICAL_TRIP_CODE}</code>.</div>`
         : "";
       return `
         <section class="screen" id="screen-sync">
@@ -1243,6 +1361,7 @@
             <p class="muted">Supabase є додатковим шаром. Текстові дані синхронізуються через таблиці, а файли квитків - через Storage bucket camino-files. Якщо Supabase не налаштовано, усе працює локально як раніше.</p>
             <div class="soft small"><strong>Поточна подорож:</strong> <code>${escapeHtml(config.tripCode || "camino-2026")}</code></div>
             ${tripWarning}
+            ${legacyTripWarning}
             <div class="form-grid">
               <div class="field"><label for="syncUrl">Supabase URL</label><input id="syncUrl" type="url" value="${escapeHtml(config.url)}" placeholder="https://xxxx.supabase.co"></div>
               <div class="field"><label for="syncAnonKey">Publishable (anon) key</label><input id="syncAnonKey" type="password" value="${escapeHtml(config.anonKey)}" placeholder="eyJ..."></div>
@@ -1273,6 +1392,7 @@
             <h3>Перевірка синхронізації</h3>
             <div class="actions">
               <button class="btn ghost" type="button" onclick="runSupabaseDiagnostics()">Діагностика Supabase</button>
+              <button class="btn ghost" type="button" onclick="checkRouteIntegrity()">Перевірити цілісність маршруту</button>
               <button class="btn ghost" type="button" onclick="createSyncTestRecord()">Тестовий запис</button>
               <button class="btn secondary" type="button" onclick="forceDownloadFromSupabase()">Примусово завантажити з Supabase</button>
               <button class="btn secondary" type="button" onclick="dedupeRoutePoints({ refreshView: true, markDirty: true })">🧹 Remove duplicate route points</button>
@@ -1452,7 +1572,12 @@
         sortOrder: current?.sortOrder ?? current?.sort_order ?? points.length,
         createdAt: current?.createdAt || nowISO()
       };
-      const next = exists ? points.map(p => p.id === id ? updated : p) : [...points, updated];
+      const normalized = normalizeRoutePointForSave(updated);
+      if (!normalized) {
+        alert("Заповніть хоча б назву, маршрут або примітку точки маршруту.");
+        return;
+      }
+      const next = exists ? points.map(p => p.id === id ? normalized : p) : [...points, normalized];
       saveRoutePoints(next);
       closeModal();
     }
@@ -1496,7 +1621,7 @@
 
     function resetBaseRoute() {
       if (!confirm("Відновити базовий маршрут? Поточні маршрутні точки буде замінено.")) return;
-      const restored = defaultRoutePoints.map(item => ({ ...item, id: generateId() }));
+      const restored = defaultRoutePoints.map((item, index) => ({ ...item, id: stableBaseRoutePointId(item, index), sortOrder: index }));
       localStorage.setItem(ROUTE_KEY, JSON.stringify(restored));
       touchMany("route_points", restored.map(item => item.id));
       refresh();
@@ -1742,7 +1867,8 @@
           return true;
         }
         setSyncStatus("Синхронізація…");
-        const { client, tripCode } = setup;
+        const { client } = setup;
+        const tripCode = normalizeTripCode(setup.tripCode);
         await upsertTrip(client, tripCode);
         const id = options.id || generateId();
         const storagePath = `${safePathPart(tripCode)}/tickets/${safePathPart(ticketId)}/${id}_${safePathPart(file.name)}`;
@@ -1754,7 +1880,7 @@
         if (uploadError) throw uploadError;
         const row = {
           id,
-          trip_code: tripCode,
+          trip_code: normalizeTripCode(tripCode),
           ticket_id: ticketId,
           filename: file.name,
           mime_type: mimeType,
@@ -2080,7 +2206,12 @@
         reader.onload = () => {
           try {
             const data = JSON.parse(reader.result);
-            if (Array.isArray(data.routePoints)) localStorage.setItem(ROUTE_KEY, JSON.stringify(data.routePoints));
+            if (Array.isArray(data.routePoints)) {
+              const importedRoutes = data.routePoints.map(item => normalizeRoutePointForSave(item)).filter(Boolean);
+              const routeDedupe = dedupeRoutePoints({ points: importedRoutes, preview: true, applyReferenceMap: true });
+              localStorage.setItem(ROUTE_KEY, JSON.stringify(sortTimelineEvents(routeDedupe.items)));
+              addSyncLog("import route_points", `${importedRoutes.length} received, ${routeDedupe.removed} duplicates removed`);
+            }
             if (Array.isArray(data.bookings)) localStorage.setItem(BOOKINGS_KEY, JSON.stringify(data.bookings));
             if (Array.isArray(data.expenses)) localStorage.setItem("camino2026_expenses", JSON.stringify(data.expenses));
             if (typeof data.notes === "string") localStorage.setItem("camino2026_notes", data.notes);
@@ -2097,15 +2228,22 @@
     }
 
     function readSyncForm() {
+      const rawTripCode = document.getElementById("syncTripCode")?.value.trim() || CANONICAL_TRIP_CODE;
+      const tripCode = normalizeTripCode(rawTripCode);
+      if (rawTripCode !== tripCode) {
+        const input = document.getElementById("syncTripCode");
+        if (input) input.value = tripCode;
+        addSyncLog("trip_code normalized", `${rawTripCode} → ${tripCode}`);
+      }
       return {
         url: document.getElementById("syncUrl")?.value.trim() || "",
         anonKey: document.getElementById("syncAnonKey")?.value.trim() || "",
-        tripCode: document.getElementById("syncTripCode")?.value.trim() || "camino-2026"
+        tripCode
       };
     }
 
     function saveSyncConfig(config) {
-      localStorage.setItem(SYNC_CONFIG_KEY, JSON.stringify(config));
+      localStorage.setItem(SYNC_CONFIG_KEY, JSON.stringify({ ...config, tripCode: normalizeTripCode(config.tripCode) }));
     }
 
     function initSyncSettings() {
@@ -2163,7 +2301,7 @@
         const testId = `sync_test_${generateId()}`;
         const testRow = {
           id: testId,
-          trip_code: tripCode,
+          trip_code: normalizeTripCode(tripCode),
           date: todayISO(),
           time: "",
           type: "інше",
@@ -2177,7 +2315,7 @@
           sort_order: 9999,
           updated_at: nowISO()
         };
-        await cloudUpsert(client, "route_points", [testRow]);
+        await upsertRoutePointsToSupabase(client, tripCode, [rowToRoute(testRow)]);
         addSyncLog("записано маршрут", testId);
 
         const { data, error } = await client.from("route_points").select("*").eq("id", testId).eq("trip_code", tripCode).maybeSingle();
@@ -2185,6 +2323,9 @@
         if (!data || data.id !== testId) throw new Error("Тестову точку не знайдено після запису.");
         localStorage.setItem(SYNC_LAST_TRIP_KEY, tripCode);
         addSyncLog("прочитано маршрут", testId);
+        await client.from("tickets").delete().eq("related_point_id", testId).eq("trip_code", tripCode);
+        await client.from("route_points").delete().eq("id", testId).eq("trip_code", tripCode);
+        addSyncLog("test records cleaned", "1 route_point");
         setSyncStatus("Supabase працює");
       } catch (error) {
         setSyncStatus(`помилка: ${error.message}`);
@@ -2280,6 +2421,91 @@
       }
     }
 
+    function routeIntegrityReport(rows, tickets = [], files = [], tripCode = CANONICAL_TRIP_CODE) {
+      const byId = new Map();
+      const duplicateIds = [];
+      const semantic = new Map();
+      const semanticDuplicates = [];
+      const possibleManualReview = [];
+      const emptyRows = [];
+      const testRows = [];
+      const wrongTripRows = [];
+      rows.forEach(row => {
+        const id = String(row.id || "");
+        if (byId.has(id)) duplicateIds.push(id);
+        byId.set(id, row);
+        if (!cleanText(row.title) && !cleanText(row.from_place) && !cleanText(row.to_place) && !cleanText(row.note)) emptyRows.push(id);
+        if (/sync_test|SYNC_TEST/i.test([row.id, row.title, row.from_place, row.to_place, row.note].join(" "))) testRows.push(id);
+        if (normalizeTripCode(row.trip_code) !== normalizeTripCode(tripCode) || row.trip_code !== normalizeTripCode(tripCode)) wrongTripRows.push({ id, trip_code: row.trip_code });
+        const key = [
+          normalizeTripCode(row.trip_code),
+          cleanText(row.date),
+          cleanText(row.time),
+          cleanText(row.type).toLowerCase(),
+          cleanText(row.title).toLowerCase(),
+          cleanText(row.from_place).toLowerCase(),
+          cleanText(row.to_place).toLowerCase()
+        ].join("|");
+        if (!semantic.has(key)) {
+          semantic.set(key, [row]);
+          return;
+        }
+        const group = semantic.get(key);
+        const first = group[0];
+        const firstFiles = files.filter(file => String(file.ticket_id || "") === String(first.id));
+        const rowFiles = files.filter(file => String(file.ticket_id || "") === String(row.id));
+        const firstTickets = tickets.filter(ticket => String(ticket.related_point_id || "") === String(first.id));
+        const rowTickets = tickets.filter(ticket => String(ticket.related_point_id || "") === String(row.id));
+        if (!cleanText(row.time) && cleanText(first.note) && cleanText(row.note) && cleanText(first.note) !== cleanText(row.note)) {
+          possibleManualReview.push({ ids: [first.id, row.id], reason: "same key without time but different notes" });
+        } else if (firstFiles.length && rowFiles.length) {
+          possibleManualReview.push({ ids: [first.id, row.id], reason: "both have files" });
+        } else if (firstTickets.length && rowTickets.length) {
+          possibleManualReview.push({ ids: [first.id, row.id], reason: "both have linked tickets" });
+        } else {
+          semanticDuplicates.push([first.id, row.id]);
+        }
+        group.push(row);
+      });
+      return { duplicateIds, semanticDuplicates, possibleManualReview, emptyRows, testRows, wrongTripRows };
+    }
+
+    async function checkRouteIntegrity() {
+      setSyncDiagnostics(`<div class="soft">Перевірка цілісності маршруту...</div>`);
+      try {
+        const { client, tripCode } = getSupabaseClient();
+        const tripCodes = [...new Set([tripCode, CANONICAL_TRIP_CODE, "camino2026"])];
+        const [routesResult, ticketsResult, filesResult] = await Promise.all([
+          client.from("route_points").select("*").in("trip_code", tripCodes),
+          client.from("tickets").select("*").in("trip_code", tripCodes),
+          client.from("ticket_files").select("*").in("trip_code", tripCodes)
+        ]);
+        if (routesResult.error) throw new Error(`route_points: ${routesResult.error.message}`);
+        if (ticketsResult.error) throw new Error(`tickets: ${ticketsResult.error.message}`);
+        if (filesResult.error) throw new Error(`ticket_files: ${filesResult.error.message}`);
+        const cloudRows = routesResult.data || [];
+        const report = routeIntegrityReport(cloudRows, ticketsResult.data || [], filesResult.data || [], tripCode);
+        const localDedupe = dedupeRoutePoints({ points: getRoutePoints(), preview: true, log: false });
+        const localEmpty = getRoutePoints().filter(isEmptyRoutePoint).map(item => item.id);
+        setSyncDiagnostics(`
+          <div class="soft small"><strong>Route integrity:</strong> local ${getRoutePoints().length}, cloud ${cloudRows.length}</div>
+          <div class="soft small">duplicate ids: ${report.duplicateIds.length}</div>
+          <div class="soft small">semantic duplicates: ${report.semanticDuplicates.length}</div>
+          <div class="soft small">manual review candidates: ${report.possibleManualReview.length}</div>
+          <div class="soft small">empty cloud route_points: ${report.emptyRows.length}</div>
+          <div class="soft small">empty local route_points: ${localEmpty.length}</div>
+          <div class="soft small">test records: ${report.testRows.length}</div>
+          <div class="soft small">different/legacy trip_code: ${report.wrongTripRows.length}</div>
+          <div class="soft small">local duplicates removable now: ${localDedupe.removed}</div>
+          <details open><summary>Details</summary><pre class="soft small">${shortJSON(report)}</pre></details>
+        `);
+        addSyncLog("route integrity", `cloud ${cloudRows.length}, semantic ${report.semanticDuplicates.length}, manual ${report.possibleManualReview.length}`);
+      } catch (error) {
+        setSyncDiagnostics(`<div class="soft small red">${escapeHtml(error.message)}</div>`);
+        addSyncLog("route integrity error", error.message);
+      }
+    }
+
     async function auditSupabaseSchema(client, tables) {
       const result = {};
       for (const table of tables) {
@@ -2319,7 +2545,7 @@
         const title = `SYNC_TEST_${stamp}`;
         const routeRow = {
           id: routeId,
-          trip_code: tripCode,
+          trip_code: normalizeTripCode(tripCode),
           date: todayISO(),
           time: "",
           type: "train",
@@ -2335,7 +2561,7 @@
         };
         const ticketRow = {
           id: ticketId,
-          trip_code: tripCode,
+          trip_code: normalizeTripCode(tripCode),
           type: "квиток",
           title,
           date: todayISO(),
@@ -2344,7 +2570,7 @@
           note: "Diagnostic test ticket",
           updated_at: nowISO()
         };
-        await cloudUpsert(client, "route_points", [routeRow]);
+        await upsertRoutePointsToSupabase(client, tripCode, [rowToRoute(routeRow)]);
         await cloudUpsert(client, "tickets", [ticketRow]);
         const [routeCheck, ticketCheck] = await Promise.all([
           client.from("route_points").select("*").eq("id", routeId).eq("trip_code", tripCode).maybeSingle(),
@@ -2356,7 +2582,10 @@
         localStorage.setItem(SYNC_LAST_TRIP_KEY, tripCode);
         addSyncLog("test write route_point", routeId);
         addSyncLog("test write ticket", ticketId);
-        setSyncDiagnostics(`<div class="soft small"><strong>Тест OK:</strong> ${escapeHtml(title)} записано і прочитано назад у route_points та tickets.</div>`);
+        await client.from("tickets").delete().eq("id", ticketId).eq("trip_code", tripCode);
+        await client.from("route_points").delete().eq("id", routeId).eq("trip_code", tripCode);
+        addSyncLog("test records cleaned", "1 route_point, 1 ticket");
+        setSyncDiagnostics(`<div class="soft small"><strong>Тест OK:</strong> ${escapeHtml(title)} записано, прочитано назад і видалено з route_points та tickets.</div>`);
         setSyncStatus("Supabase test OK");
       } catch (error) {
         setSyncStatus(`помилка тесту: ${error.message}`);
@@ -2367,7 +2596,7 @@
 
     async function upsertTrip(client, tripCode) {
       const { error } = await client.from("trips").upsert({
-        code: tripCode,
+        code: normalizeTripCode(tripCode),
         title: "Camino del Norte 2026",
         updated_at: nowISO()
       }, { onConflict: "code" });
@@ -2375,22 +2604,24 @@
     }
 
     function routeToRow(item, index, tripCode) {
+      const normalized = normalizeRoutePointForSave(item);
+      if (!normalized || !normalized.id) return null;
       const updated_at = getLocalUpdated("route_points", item.id) === "1970-01-01T00:00:00.000Z" ? nowISO() : getLocalUpdated("route_points", item.id);
-      setLocalUpdated("route_points", item.id, updated_at);
+      setLocalUpdated("route_points", normalized.id, updated_at);
       return {
-        id: item.id,
-        trip_code: tripCode,
-        date: item.date || "",
-        time: item.time || "",
-        type: item.type || "",
-        from_place: item.from || "",
-        to_place: item.to || "",
-        title: item.title || "",
-        address: item.address || "",
-        note: item.note || "",
-        maps_url: item.mapsUrl || "",
-        status: item.status || "",
-        sort_order: Number.isFinite(Number(item.sortOrder ?? item.sort_order)) ? Number(item.sortOrder ?? item.sort_order) : index,
+        id: normalized.id,
+        trip_code: normalizeTripCode(tripCode),
+        date: nullableText(normalized.date),
+        time: nullableText(normalized.time),
+        type: nullableText(normalized.type),
+        from_place: nullableText(normalized.from),
+        to_place: nullableText(normalized.to),
+        title: nullableText(normalized.title),
+        address: nullableText(normalized.address),
+        note: nullableText(normalized.note),
+        maps_url: nullableText(normalized.mapsUrl),
+        status: nullableText(normalized.status),
+        sort_order: Number.isFinite(Number(normalized.sortOrder ?? normalized.sort_order)) ? Number(normalized.sortOrder ?? normalized.sort_order) : index,
         updated_at
       };
     }
@@ -2420,7 +2651,7 @@
       setLocalUpdated("tickets", item.id, updated_at);
       return {
         id: item.id,
-        trip_code: tripCode,
+        trip_code: normalizeTripCode(tripCode),
         type: item.type || "",
         title: item.name || item.title || "",
         date: item.date || "",
@@ -2447,7 +2678,7 @@
     function ticketFileToRow(item, tripCode) {
       return {
         id: item.id,
-        trip_code: tripCode,
+        trip_code: normalizeTripCode(tripCode),
         ticket_id: item.ticketId || item.ticket_id || "",
         filename: item.filename || "",
         mime_type: item.mimeType || item.mime_type || "application/octet-stream",
@@ -2499,7 +2730,7 @@
       setLocalUpdated("expenses", id, updated_at);
       return {
         id,
-        trip_code: tripCode,
+        trip_code: normalizeTripCode(tripCode),
         category: item.category || "",
         title: item.name || item.title || "",
         amount: Number(item.amount || 0),
@@ -2522,7 +2753,7 @@
     }
 
     async function cloudSelect(client, table, tripCode) {
-      const { data, error } = await client.from(table).select("*").eq("trip_code", tripCode);
+      const { data, error } = await client.from(table).select("*").eq("trip_code", normalizeTripCode(tripCode));
       if (error) throw error;
       return data || [];
     }
@@ -2533,8 +2764,52 @@
       if (error) throw error;
     }
 
+    async function countCloudRoutePoints(client, tripCode) {
+      const { data, error } = await client.from("route_points").select("id").eq("trip_code", normalizeTripCode(tripCode));
+      if (error) throw error;
+      return data || [];
+    }
+
+    async function upsertRoutePointsToSupabase(client, tripCode, points, options = {}) {
+      const normalizedTripCode = normalizeTripCode(tripCode);
+      const input = Array.isArray(points) ? points : [];
+      addSyncLog("route_points local before upload", `${input.length}`);
+      const localDedupe = dedupeRoutePoints({ points: input, preview: true, applyReferenceMap: true, log: false });
+      const uniqueById = new Map();
+      let emptySkipped = 0;
+      localDedupe.items.forEach((item, index) => {
+        const row = routeToRow(item, index, normalizedTripCode);
+        if (!row) {
+          emptySkipped += 1;
+          return;
+        }
+        uniqueById.set(String(row.id), row);
+      });
+      const rows = [...uniqueById.values()];
+      const duplicatesPrevented = Math.max(0, input.length - rows.length - emptySkipped);
+      addSyncLog("route_points payload unique", `${rows.length}`);
+      addSyncLog("duplicates prevented", `${duplicatesPrevented}`);
+      addSyncLog("empty route_points skipped", `${emptySkipped}`);
+      if (!rows.length) return { before: 0, after: 0, inserted: 0, updated: 0, skipped: emptySkipped, duplicatesPrevented };
+
+      const beforeRows = await countCloudRoutePoints(client, normalizedTripCode);
+      const beforeIds = new Set(beforeRows.map(row => String(row.id)));
+      addSyncLog("cloud route_points before", `${beforeRows.length}`);
+      const inserted = rows.filter(row => !beforeIds.has(String(row.id))).length;
+      const updated = rows.length - inserted;
+      await cloudUpsert(client, "route_points", rows, "id");
+      const afterRows = await countCloudRoutePoints(client, normalizedTripCode);
+      addSyncLog("cloud route_points after", `${afterRows.length}`);
+      addSyncLog("route_points inserted/updated", `${inserted}/${updated}`);
+      if (localDedupe.removed) addSyncLog("duplicates removed", `${localDedupe.removed}`);
+      if (options.persistLocal) {
+        localStorage.setItem(ROUTE_KEY, JSON.stringify(sortTimelineEvents(localDedupe.items.map(item => normalizeRoutePointForSave(item)).filter(Boolean))));
+      }
+      return { before: beforeRows.length, after: afterRows.length, inserted, updated, skipped: emptySkipped, duplicatesPrevented };
+    }
+
     async function cloudReplace(client, table, tripCode, rows, onConflict = "id") {
-      const { error: deleteError } = await client.from(table).delete().eq("trip_code", tripCode);
+      const { error: deleteError } = await client.from(table).delete().eq("trip_code", normalizeTripCode(tripCode));
       if (deleteError) throw deleteError;
       await cloudUpsert(client, table, rows, onConflict);
     }
@@ -2571,10 +2846,9 @@
         const routeDedupe = dedupeRoutePoints({ points: getRoutePoints(), preview: true, applyReferenceMap: true });
         const sortedRoutes = sortTimelineEvents(routeDedupe.items);
         localStorage.setItem(ROUTE_KEY, JSON.stringify(sortedRoutes));
-        const routeRows = sortedRoutes.map((item, index) => routeToRow(item, index, tripCode));
         const ticketRows = getBookings().map(item => ticketToRow(item, tripCode));
         const fileRows = getTicketFiles().map(item => ticketFileToRow(item, tripCode));
-        await cloudReplace(client, "route_points", tripCode, routeRows);
+        const routeStats = await upsertRoutePointsToSupabase(client, tripCode, sortedRoutes);
         await cloudReplace(client, "tickets", tripCode, ticketRows);
         await cloudReplace(client, "ticket_files", tripCode, fileRows);
         await cloudReplace(client, "expenses", tripCode, getExpenses().map(item => expenseToRow(item, tripCode)));
@@ -2583,7 +2857,7 @@
         localStorage.setItem(SYNC_LAST_TRIP_KEY, tripCode);
         setSyncStatus(syncedNowLabel());
         addSyncLog("синхронізовано", "локальні дані завантажено в хмару");
-        addSyncLog("uploaded route_points", `${routeRows.length}`);
+        addSyncLog("uploaded route_points", `${routeStats.inserted + routeStats.updated}`);
         addSyncLog("uploaded tickets", `${ticketRows.length}`);
         addSyncLog("uploaded ticket_files", `${fileRows.length}`);
         addSyncLog("storage uploaded files", `${storageUploaded}`);
@@ -2603,12 +2877,15 @@
           cloudSelect(client, "ticket_files", tripCode),
           cloudSelect(client, "expenses", tripCode)
         ]);
-        const routeMerge = mergeCloudRows(getRoutePoints(), routes.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)), rowToRoute);
-        const routeDedupe = dedupeRoutePoints({ points: routeMerge.items, preview: true, applyReferenceMap: true });
+        const routeBase = routeMergeBase(routes);
+        const routeMerge = mergeCloudRows(routeBase, routes.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)), rowToRoute);
+        const routeDedupe = dedupeRoutePoints({ points: routeMerge.items, preview: true, applyReferenceMap: true, tickets: [...getBookings(), ...tickets], ticketFiles: [...getTicketFiles(), ...ticketFiles] });
+        const remappedTickets = remapRouteLinkedRows(tickets, routeDedupe.idMap, "related_point_id");
+        const remappedTicketFiles = remapRouteLinkedRows(ticketFiles, routeDedupe.idMap, "ticket_id");
         const sortedRoutes = sortTimelineEvents(routeDedupe.items);
-        const ticketMerge = mergeCloudRows(getBookings(), tickets, rowToTicket);
+        const ticketMerge = mergeCloudRows(getBookings(), remappedTickets.rows, rowToTicket);
         const expenseMerge = mergeCloudRows(getExpenses(), expenses, rowToExpense);
-        const fileMerge = mergeCloudRows(getTicketFiles(), ticketFiles, rowToTicketFile);
+        const fileMerge = mergeCloudRows(getTicketFiles(), remappedTicketFiles.rows, rowToTicketFile);
         localStorage.setItem(ROUTE_KEY, JSON.stringify(sortedRoutes));
         localStorage.setItem(BOOKINGS_KEY, JSON.stringify(ticketMerge.items));
         saveTicketFiles(await hydrateAndCacheTicketFiles(client, fileMerge.items), { markDirty: false });
@@ -2697,18 +2974,20 @@
           cloudSelect(client, "ticket_files", tripCode),
           cloudSelect(client, "expenses", tripCode),
           cloudSelect(client, "checklists", tripCode),
-          client.from("notes").select("*").eq("trip_code", tripCode).maybeSingle()
+          client.from("notes").select("*").eq("trip_code", normalizeTripCode(tripCode)).maybeSingle()
         ]);
         if (notesResult.error) throw new Error(`notes: ${notesResult.error.message}`);
-        const routeBase = options.replaceLocal ? [] : getRoutePoints();
+        const routeBase = routeMergeBase(routes, options);
         const ticketBase = options.replaceLocal ? [] : getBookings();
         const fileBase = options.replaceLocal ? [] : getTicketFiles();
         const expenseBase = options.replaceLocal ? [] : getExpenses();
         const routeMerge = mergeCloudRows(routeBase, routes.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)), rowToRoute);
-        const routeDedupe = dedupeRoutePoints({ points: routeMerge.items, preview: true, applyReferenceMap: true });
+        const routeDedupe = dedupeRoutePoints({ points: routeMerge.items, preview: true, applyReferenceMap: true, tickets: [...ticketBase, ...tickets], ticketFiles: [...fileBase, ...ticketFiles] });
+        const remappedTickets = remapRouteLinkedRows(tickets, routeDedupe.idMap, "related_point_id");
+        const remappedTicketFiles = remapRouteLinkedRows(ticketFiles, routeDedupe.idMap, "ticket_id");
         const sortedRoutes = sortTimelineEvents(routeDedupe.items);
-        const ticketMerge = mergeCloudRows(ticketBase, tickets, rowToTicket);
-        const fileMerge = mergeCloudRows(fileBase, ticketFiles, rowToTicketFile);
+        const ticketMerge = mergeCloudRows(ticketBase, remappedTickets.rows, rowToTicket);
+        const fileMerge = mergeCloudRows(fileBase, remappedTicketFiles.rows, rowToTicketFile);
         const expenseMerge = mergeCloudRows(expenseBase, expenses, rowToExpense);
         localStorage.setItem(ROUTE_KEY, JSON.stringify(sortedRoutes));
         localStorage.setItem(BOOKINGS_KEY, JSON.stringify(ticketMerge.items));
@@ -2768,28 +3047,32 @@
         await upsertTrip(client, tripCode);
         const storageUploaded = await uploadLocalFilesToCloud(client, tripCode);
 
-        const cloudRoutes = await cloudSelect(client, "route_points", tripCode);
-        const localRouteDedupe = dedupeRoutePoints({ points: getRoutePoints(), preview: true, log: false, applyReferenceMap: true });
+        const [cloudRoutes, cloudTickets, cloudTicketFiles] = await Promise.all([
+          cloudSelect(client, "route_points", tripCode),
+          cloudSelect(client, "tickets", tripCode),
+          cloudSelect(client, "ticket_files", tripCode)
+        ]);
+        const localRouteDedupe = dedupeRoutePoints({ points: routeMergeBase(cloudRoutes), preview: true, log: false, applyReferenceMap: true, tickets: [...getBookings(), ...cloudTickets], ticketFiles: [...getTicketFiles(), ...cloudTicketFiles] });
         const localRoutes = localRouteDedupe.items;
         const routeResult = mergeByUpdatedAt(localRoutes, cloudRoutes, "route_points", rowToRoute, (item, index) => routeToRow(item, index, tripCode));
-        const routeDedupe = dedupeRoutePoints({ points: routeResult.local, preview: true, applyReferenceMap: true });
+        const routeDedupe = dedupeRoutePoints({ points: routeResult.local, preview: true, applyReferenceMap: true, tickets: [...getBookings(), ...cloudTickets], ticketFiles: [...getTicketFiles(), ...cloudTicketFiles] });
+        const remappedCloudTickets = remapRouteLinkedRows(cloudTickets, routeDedupe.idMap, "related_point_id");
+        const remappedCloudTicketFiles = remapRouteLinkedRows(cloudTicketFiles, routeDedupe.idMap, "ticket_id");
         const sortedRoutes = sortTimelineEvents(routeDedupe.items);
         localStorage.setItem(ROUTE_KEY, JSON.stringify(sortedRoutes));
-        await cloudUpsert(client, "route_points", routeResult.pushRows);
-        addSyncLog("uploaded route_points", `${routeResult.pushRows.length}`);
+        const routeUpload = await upsertRoutePointsToSupabase(client, tripCode, routeResult.pushRows.map(rowToRoute));
+        addSyncLog("uploaded route_points", `${routeUpload.inserted + routeUpload.updated}`);
         addSyncLog("downloaded route_points", `${cloudRoutes.length}`);
 
-        const cloudTickets = await cloudSelect(client, "tickets", tripCode);
-        const ticketResult = mergeByUpdatedAt(getBookings(), cloudTickets, "tickets", rowToTicket, item => ticketToRow(item, tripCode));
+        const ticketResult = mergeByUpdatedAt(getBookings(), remappedCloudTickets.rows, "tickets", rowToTicket, item => ticketToRow(item, tripCode));
         localStorage.setItem(BOOKINGS_KEY, JSON.stringify(ticketResult.local));
         await cloudUpsert(client, "tickets", ticketResult.pushRows);
         addSyncLog("uploaded tickets", `${ticketResult.pushRows.length}`);
         addSyncLog("downloaded tickets", `${cloudTickets.length}`);
 
-        const cloudTicketFiles = await cloudSelect(client, "ticket_files", tripCode);
         const localTicketFiles = getTicketFiles();
         const localFileMap = new Map(localTicketFiles.map(file => [String(file.id), file]));
-        const cloudFileMap = new Map(cloudTicketFiles.map(file => [String(file.id), rowToTicketFile(file)]));
+        const cloudFileMap = new Map(remappedCloudTicketFiles.rows.map(file => [String(file.id), rowToTicketFile(file)]));
         const mergedFiles = [...localTicketFiles];
         cloudFileMap.forEach((file, id) => {
           const localFile = localFileMap.get(id);
@@ -2809,7 +3092,11 @@
             return !cloudFile || !isCloudNewer(file.updatedAt, cloudFile.updatedAt);
           })
           .map(file => ticketFileToRow(file, tripCode));
-        await cloudUpsert(client, "ticket_files", localFileRows);
+        const remappedCloudFileRows = remappedCloudTicketFiles.remapped
+          ? remappedCloudTicketFiles.rows.filter((row, index) => String(row.ticket_id || "") !== String(cloudTicketFiles[index]?.ticket_id || ""))
+          : [];
+        await cloudUpsert(client, "ticket_files", [...localFileRows, ...remappedCloudFileRows]);
+        if (remappedCloudFileRows.length) addSyncLog("uploaded remapped ticket_files", `${remappedCloudFileRows.length}`);
         saveTicketFiles(await hydrateAndCacheTicketFiles(client, mergedFiles), { markDirty: false });
         addSyncLog("uploaded ticket_files", `${localFileRows.length}`);
         addSyncLog("downloaded ticket_files", `${cloudTicketFiles.length}`);
@@ -2853,7 +3140,8 @@
         const cloud = cloudMap.get(String(item.id));
         const localUpdated = getLocalUpdated(scope, String(item.id));
         if (!cloud || !isCloudNewer(localUpdated, cloud.updated_at)) {
-          pushRows.push(localToRow(item, index));
+          const row = localToRow(item, index);
+          if (row) pushRows.push(row);
         }
       });
 
@@ -2875,12 +3163,12 @@
     async function uploadNotes(client, tripCode) {
       const updated_at = getLocalUpdated("notes") === "1970-01-01T00:00:00.000Z" ? nowISO() : getLocalUpdated("notes");
       setLocalUpdated("notes", "", updated_at);
-      const { error } = await client.from("notes").upsert({ trip_code: tripCode, content: localStorage.getItem("camino2026_notes") || "", updated_at }, { onConflict: "trip_code" });
+      const { error } = await client.from("notes").upsert({ trip_code: normalizeTripCode(tripCode), content: localStorage.getItem("camino2026_notes") || "", updated_at }, { onConflict: "trip_code" });
       if (error) throw error;
     }
 
     async function pullNotes(client, tripCode) {
-      const { data, error } = await client.from("notes").select("*").eq("trip_code", tripCode).maybeSingle();
+      const { data, error } = await client.from("notes").select("*").eq("trip_code", normalizeTripCode(tripCode)).maybeSingle();
       if (error) throw error;
       if (data) {
         localStorage.setItem("camino2026_notes", data.content || "");
@@ -2889,7 +3177,7 @@
     }
 
     async function syncNotes(client, tripCode) {
-      const { data, error } = await client.from("notes").select("*").eq("trip_code", tripCode).maybeSingle();
+      const { data, error } = await client.from("notes").select("*").eq("trip_code", normalizeTripCode(tripCode)).maybeSingle();
       if (error) throw error;
       const localUpdated = getLocalUpdated("notes");
       if (data && isCloudNewer(localUpdated, data.updated_at)) {
@@ -2904,7 +3192,7 @@
       return Object.values(checklists).map(list => {
         const updated_at = getLocalUpdated("checklists", list.storage) === "1970-01-01T00:00:00.000Z" ? nowISO() : getLocalUpdated("checklists", list.storage);
         setLocalUpdated("checklists", list.storage, updated_at);
-        return { trip_code: tripCode, list_key: list.storage, state: getChecklistState(list), updated_at };
+        return { trip_code: normalizeTripCode(tripCode), list_key: list.storage, state: getChecklistState(list), updated_at };
       });
     }
 
