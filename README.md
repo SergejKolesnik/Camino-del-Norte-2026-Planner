@@ -44,6 +44,9 @@ supabase-route-point-integrity.sql
 4. У застосунку відкрийте `☁️ Синхр.` → `Перевірити цілісність маршруту`.
 5. Виконайте кілька `Download` / `Sync` і переконайтесь, що кількість `route_points` не зростає.
 
+Якщо база була створена до soft-delete синхронізації, спочатку виконайте `supabase-soft-delete-sync.sql`.
+Він додає `deleted_at` до `route_points`, `tickets`, `ticket_files`, `expenses` та індекси для безпечного multi-device merge.
+
 ## Запуск
 
 PWA потрібно відкривати через HTTP, бо service worker не працює з `file://`.
@@ -113,6 +116,7 @@ create table if not exists public.route_points (
   maps_url text,
   status text,
   sort_order int not null default 0,
+  deleted_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -126,6 +130,7 @@ create table if not exists public.tickets (
   related_point_id text,
   booking_number text,
   note text,
+  deleted_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -139,6 +144,7 @@ create table if not exists public.ticket_files (
   mime_type text not null default 'application/octet-stream',
   storage_path text not null,
   size_bytes bigint not null default 0,
+  deleted_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -151,6 +157,7 @@ create table if not exists public.expenses (
   amount numeric(12,2) not null default 0,
   currency text not null default 'EUR',
   date text,
+  deleted_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -172,8 +179,11 @@ create table if not exists public.checklists (
 );
 
 create index if not exists route_points_trip_code_sort_idx on public.route_points(trip_code, sort_order);
+create index if not exists route_points_trip_deleted_idx on public.route_points(trip_code, deleted_at);
 create index if not exists tickets_trip_code_idx on public.tickets(trip_code);
+create index if not exists tickets_trip_deleted_idx on public.tickets(trip_code, deleted_at);
 create index if not exists ticket_files_trip_ticket_idx on public.ticket_files(trip_code, ticket_id);
+create index if not exists ticket_files_trip_deleted_idx on public.ticket_files(trip_code, deleted_at);
 create unique index if not exists ticket_files_storage_path_unique_idx on public.ticket_files(storage_path);
 
 -- Migration for older installs where ticket_files.ticket_id had an FK to tickets(id).
@@ -183,6 +193,7 @@ alter table public.ticket_files
 alter table public.ticket_files
   alter column ticket_id set not null;
 create index if not exists expenses_trip_code_idx on public.expenses(trip_code);
+create index if not exists expenses_trip_deleted_idx on public.expenses(trip_code, deleted_at);
 create unique index if not exists trips_code_unique_idx on public.trips(code);
 
 drop trigger if exists trg_trips_updated_at on public.trips;
