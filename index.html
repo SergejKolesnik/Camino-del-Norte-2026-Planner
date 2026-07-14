@@ -452,6 +452,8 @@
     const SYNC_LAST_TRIP_KEY = "camino2026_last_synced_trip_code";
     const TIMELINE_AUTO_SORT_KEY = "camino2026_timeline_auto_sort";
     const TICKET_FILES_KEY = "camino2026_ticket_files";
+    const DIARY_KEY = "camino2026_diary_entries";
+    const DIARY_FILES_KEY = "camino2026_diary_files";
     const DELETED_ROUTE_POINTS_KEY = "camino2026_deleted_route_points";
     const CANONICAL_TRIP_CODE = "camino-2026";
     const LEGACY_TRIP_CODES = new Set(["camino2026"]);
@@ -512,9 +514,9 @@
       { id: "med", icon: "+", label: "Аптечка", render: () => renderChecklist("med") },
       { id: "planb", icon: "Б", label: "План Б", render: renderPlanB },
       { id: "budget", icon: "€", label: "Бюджет", render: renderBudget },
+      { id: "diary", icon: "📔", label: "Щоденник", render: renderDiary },
       { id: "notes", icon: "Н", label: "Нотатки", render: renderNotes },
-      { id: "sync", icon: "", label: "☁️ Синхр.", render: renderSync },
-      { id: "data", icon: "JSON", label: "Дані", render: renderData }
+      { id: "sync", icon: "", label: "☁️ Синхр.", render: renderSync }
     ];
 
     const screenRoot = document.getElementById("screens");
@@ -738,6 +740,37 @@
     function getTicketFiles(options = {}) {
       const files = getAllTicketFiles();
       return options.includeDeleted ? files : activeRecords(files);
+    }
+
+    function getAllDiaryEntries() {
+      return readJSON(DIARY_KEY, []);
+    }
+
+    function getDiaryEntries(options = {}) {
+      const entries = getAllDiaryEntries();
+      return options.includeDeleted ? entries : activeRecords(entries);
+    }
+
+    function saveDiaryEntries(entries, options = {}) {
+      const deleted = options.includeDeleted ? [] : getAllDiaryEntries().filter(isSoftDeleted);
+      localStorage.setItem(DIARY_KEY, JSON.stringify([...entries, ...deleted]));
+      if (options.markDirty !== false) touchMany("diary_entries", entries.map(item => String(item.id)).filter(Boolean));
+      renderDiaryFiles();
+    }
+
+    function getAllDiaryFiles() {
+      return readJSON(DIARY_FILES_KEY, []);
+    }
+
+    function getDiaryFiles(options = {}) {
+      const files = getAllDiaryFiles();
+      return options.includeDeleted ? files : activeRecords(files);
+    }
+
+    function saveDiaryFiles(files, options = {}) {
+      localStorage.setItem(DIARY_FILES_KEY, JSON.stringify(files));
+      if (options.markDirty !== false) touchMany("diary_files", files.map(item => String(item.id)).filter(Boolean));
+      renderDiaryFiles();
     }
 
     function getAllBookings() {
@@ -1501,6 +1534,49 @@
       `;
     }
 
+    function renderDiary() {
+      const entries = getDiaryEntries().sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")) || String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+      return `
+        <section class="screen" id="screen-diary">
+          <div class="card">
+            <h2>Щоденник подорожі</h2>
+            <p class="muted">Фото, маленькі історії дня і прив'язка до маршруту. Якщо Supabase підключено, фото йдуть у Storage; без Supabase працює локальний IndexedDB fallback.</p>
+            <div class="actions">
+              <button class="btn" type="button" onclick="openDiaryForm()">Додати запис</button>
+            </div>
+          </div>
+          <div class="timeline">
+            ${entries.length ? entries.map(diaryCard).join("") : `<div class="empty">Щоденник поки порожній. Додайте перший запис із дороги.</div>`}
+          </div>
+        </section>
+      `;
+    }
+
+    function diaryCard(entry) {
+      const point = getRoutePoints().find(item => item.id === entry.routePointId);
+      const title = entry.title || (point ? routeGeneratedTitle(point) : "Запис щоденника");
+      return `
+        <article class="point" data-diary-entry="${entry.id}">
+          <div class="point-top">
+            <div>
+              <div class="point-title">${escapeHtml(title || "Запис щоденника")}</div>
+              <div class="point-meta">${escapeHtml(entry.date || "без дати")}${entry.mood ? ` · ${escapeHtml(entry.mood)}` : ""}${entry.weather ? ` · ${escapeHtml(entry.weather)}` : ""}</div>
+            </div>
+            <span class="chip">щоденник</span>
+          </div>
+          ${point ? `<p class="point-note"><b>Маршрут:</b> ${escapeHtml(routeGeneratedTitle(point))}</p>` : ""}
+          ${entry.text ? `<p class="point-note">${escapeHtml(entry.text)}</p>` : ""}
+          <div class="attachments" data-diary-files="${entry.id}"></div>
+          <div class="actions">
+            <button class="btn ghost" type="button" onclick="openDiaryForm('${entry.id}')">Редагувати</button>
+            <button class="btn ghost" type="button" onclick="openDiaryFileForm('${entry.id}')">Додати фото</button>
+            ${point ? `<button class="btn ghost" type="button" onclick="openTimelineForRoutePoint('${point.id}')">Відкрити маршрут</button>` : ""}
+            <button class="btn danger" type="button" onclick="deleteDiaryEntry('${entry.id}')">Видалити</button>
+          </div>
+        </article>
+      `;
+    }
+
     function renderNotes() {
       return `
         <section class="screen" id="screen-notes">
@@ -1575,8 +1651,9 @@
           </div>
           <div class="card">
             <h3>Вкладення</h3>
-            <p class="muted">PDF, фото і QR квитків зберігаються під одним owner id: routePointId для події таймлайну або ticket.id для окремого квитка. Якщо Supabase підключено, файли йдуть у Storage bucket camino-files; інакше працює локальний IndexedDB fallback.</p>
+            <p class="muted">PDF, фото і QR квитків зберігаються під одним owner id: routePointId для події таймлайну або ticket.id для окремого квитка. Фото щоденника зберігаються окремо за diary entry id. Якщо Supabase підключено, файли йдуть у Storage bucket camino-files; інакше працює локальний IndexedDB fallback.</p>
           </div>
+          ${renderBackupCard()}
           <div class="card">
             <h3>Журнал синхронізації</h3>
             <div id="syncLog" class="grid">${renderSyncLogItems()}</div>
@@ -1585,20 +1662,18 @@
       `;
     }
 
-    function renderData() {
+    function renderBackupCard() {
       return `
-        <section class="screen" id="screen-data">
-          <div class="card">
-            <h2>Дані</h2>
-            <p class="muted">Експорт JSON містить маршрут, записи квитків, бюджет, нотатки та чек-листи. Файли не експортуються.</p>
-            <div class="actions">
-              <button class="btn" type="button" onclick="exportJSON()">Експорт JSON</button>
-              <button class="btn secondary" type="button" onclick="document.getElementById('importFile').click()">Імпорт JSON</button>
-              <button class="btn danger" type="button" onclick="resetBaseRoute()">Скинути демо-дані / відновити базовий маршрут</button>
-            </div>
+        <div class="card">
+          <h3>Backup JSON</h3>
+          <p class="muted">Експорт JSON містить маршрут, записи квитків, бюджет, нотатки, чек-листи і текстові записи щоденника. Файли та фото не експортуються.</p>
+          <div class="actions">
+            <button class="btn" type="button" onclick="exportJSON()">Експорт JSON</button>
+            <button class="btn secondary" type="button" onclick="document.getElementById('importFile').click()">Імпорт JSON</button>
+            <button class="btn danger" type="button" onclick="resetBaseRoute()">Скинути демо-дані / відновити базовий маршрут</button>
           </div>
-          <div class="card"><h3>Важливо</h3><p class="muted">Скріни, PDF і вкладення зберігаються тільки на цьому телефоні або в цьому браузері через IndexedDB.</p></div>
-        </section>
+          <p class="small muted">Файли квитків і фото щоденника зберігаються в IndexedDB або Supabase Storage, тому в JSON вони не входять.</p>
+        </div>
       `;
     }
 
@@ -1617,6 +1692,7 @@
       initAutosync();
       updateNetworkStatus();
       renderAllAttachments();
+      renderDiaryFiles();
     }
 
     function refresh() {
@@ -1628,6 +1704,7 @@
       initNotes();
       initSyncSettings();
       renderAllAttachments();
+      renderDiaryFiles();
     }
 
     function activateScreen(id, options = {}) {
@@ -1636,6 +1713,7 @@
       document.querySelector(`.nav-btn[data-target="${id}"]`)?.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
       if (options.scrollTop !== false) window.scrollTo({ top: 0, behavior: "smooth" });
       renderAllAttachments();
+      renderDiaryFiles();
     }
 
     function findRouteLinkedCard(attribute, routePointId) {
@@ -1866,6 +1944,90 @@
 
     function openRouteFileForm(ownerId) { openFileForm("routeAttachments", ownerId, true); }
     function openBookingFileForm(ownerId) { openFileForm("attachments", ownerId, false); }
+    function openDiaryFileForm(ownerId) { openDiaryFileModal(ownerId); }
+
+    function openDiaryForm(id = "") {
+      const entry = getDiaryEntries({ includeDeleted: true }).find(item => item.id === id) || {
+        id: "",
+        date: todayISO(),
+        routePointId: "",
+        title: "",
+        mood: "",
+        weather: "",
+        text: ""
+      };
+      const pointOptions = [`<option value="">Без прив'язки до маршруту</option>`]
+        .concat(getRoutePoints().map(point => `<option value="${escapeHtml(point.id)}" ${point.id === entry.routePointId ? "selected" : ""}>${escapeHtml(`${point.date || "без дати"} · ${routeGeneratedTitle(point)}`)}</option>`))
+        .join("");
+      modalContent.innerHTML = `
+        <h2>${id ? "Редагувати запис" : "Новий запис щоденника"}</h2>
+        <div class="form-grid">
+          <div class="field"><label for="diaryDate">Дата</label><input id="diaryDate" type="date" value="${escapeHtml(entry.date || todayISO())}"></div>
+          <div class="field"><label for="diaryPoint">Точка маршруту</label><select id="diaryPoint">${pointOptions}</select></div>
+          <div class="field"><label for="diaryTitle">Назва</label><input id="diaryTitle" type="text" value="${escapeHtml(entry.title || "")}" placeholder="Наприклад: перший день біля океану"></div>
+          <div class="field"><label for="diaryMood">Настрій</label><input id="diaryMood" type="text" value="${escapeHtml(entry.mood || "")}" placeholder="спокійно, вау, втомлено..."></div>
+          <div class="field"><label for="diaryWeather">Погода</label><input id="diaryWeather" type="text" value="${escapeHtml(entry.weather || "")}" placeholder="сонце, вітер, дощ..."></div>
+          <div class="field wide"><label for="diaryText">Текст</label><textarea id="diaryText" class="notes" placeholder="Що хочеться пам'ятати про цей день?">${escapeHtml(entry.text || "")}</textarea></div>
+        </div>
+        <div class="actions">
+          <button class="btn" type="button" onclick="saveDiaryEntry('${id}')">Зберегти</button>
+          <button class="btn secondary" type="button" onclick="closeModal()">Скасувати</button>
+        </div>
+      `;
+      openModal();
+    }
+
+    function saveDiaryEntry(id = "") {
+      const now = nowISO();
+      const entryId = id || generateId();
+      const entries = getDiaryEntries({ includeDeleted: true });
+      const existing = entries.find(item => item.id === entryId) || {};
+      const next = {
+        ...existing,
+        id: entryId,
+        date: val("diaryDate") || todayISO(),
+        routePointId: val("diaryPoint"),
+        title: val("diaryTitle"),
+        mood: val("diaryMood"),
+        weather: val("diaryWeather"),
+        text: document.getElementById("diaryText")?.value.trim() || "",
+        createdAt: existing.createdAt || now,
+        updatedAt: now,
+        deletedAt: ""
+      };
+      const merged = entries.some(item => item.id === entryId)
+        ? entries.map(item => item.id === entryId ? next : item)
+        : [next, ...entries];
+      localStorage.setItem(DIARY_KEY, JSON.stringify(merged));
+      setLocalUpdated("diary_entries", entryId, now);
+      setSyncStatus("Є локальні зміни");
+      scheduleAutosync();
+      closeModal();
+      refresh();
+    }
+
+    function deleteDiaryEntry(id) {
+      if (!confirm("Видалити запис щоденника? Фото залишаться локально/у Storage, доки їх не видалити окремо.")) return;
+      const deletedAt = nowISO();
+      const next = getAllDiaryEntries().map(item => String(item.id) === String(id) ? { ...item, deletedAt, updatedAt: deletedAt } : item);
+      localStorage.setItem(DIARY_KEY, JSON.stringify(next));
+      setLocalUpdated("diary_entries", id, deletedAt);
+      setSyncStatus("Є локальні зміни");
+      scheduleAutosync();
+      refresh();
+    }
+
+    function openDiaryFileModal(ownerId) {
+      modalContent.innerHTML = `
+        <h2>Додати фото до щоденника</h2>
+        <div class="form-grid">
+          <div class="field"><label for="diaryFileCaption">Підпис</label><input id="diaryFileCaption" type="text" placeholder="Короткий підпис до фото"></div>
+          <div class="field"><label for="diaryFileInput">Фото</label><input id="diaryFileInput" type="file" accept="image/*"></div>
+        </div>
+        <div class="actions"><button class="btn" type="button" onclick="saveDiaryFile('${ownerId}')">Зберегти фото</button><button class="btn secondary" type="button" onclick="closeModal()">Скасувати</button></div>
+      `;
+      openModal();
+    }
 
     function openFileForm(store, ownerId, withKind) {
       modalContent.innerHTML = `
@@ -1881,11 +2043,12 @@
 
     function openDB() {
       return new Promise((resolve, reject) => {
-        const request = indexedDB.open("camino2026_db", 1);
+        const request = indexedDB.open("camino2026_db", 2);
         request.onupgradeneeded = () => {
           const db = request.result;
           if (!db.objectStoreNames.contains("attachments")) db.createObjectStore("attachments", { keyPath: "id" });
           if (!db.objectStoreNames.contains("routeAttachments")) db.createObjectStore("routeAttachments", { keyPath: "id" });
+          if (!db.objectStoreNames.contains("diaryFiles")) db.createObjectStore("diaryFiles", { keyPath: "id" });
         };
         request.onsuccess = () => resolve(request.result);
         request.onerror = () => reject(request.error);
@@ -1993,6 +2156,187 @@
       scheduleAutosync();
       closeModal();
       renderAllAttachments();
+    }
+
+    async function saveDiaryFile(entryId) {
+      const input = document.getElementById("diaryFileInput");
+      const file = input.files?.[0];
+      if (!file) { alert("Оберіть фото."); return; }
+      if (!String(file.type || "").startsWith("image/")) { alert("Для щоденника поки підтримуються тільки фото."); return; }
+      const caption = val("diaryFileCaption");
+      const id = generateId();
+      const existingLocal = (await dbAll("diaryFiles")).find(item =>
+        item.entryId === entryId &&
+        item.filename === file.name &&
+        Number(item.sizeBytes || item.blob?.size || 0) === Number(file.size || 0) &&
+        item.mimeType === (file.type || "application/octet-stream")
+      );
+      if (existingLocal) {
+        closeModal();
+        await renderDiaryFiles();
+        addSyncLog("фото вже існує", file.name);
+        return;
+      }
+      const uploaded = await trySaveDiaryFileToSupabase(entryId, file, { id, caption });
+      await dbPut("diaryFiles", {
+        id,
+        entryId,
+        cloudId: uploaded ? id : "",
+        caption,
+        blob: file,
+        filename: file.name,
+        mimeType: file.type || "application/octet-stream",
+        sizeBytes: file.size || 0,
+        createdAt: nowISO()
+      });
+      if (uploaded) {
+        setSyncStatus(syncedNowLabel());
+      } else {
+        setSyncStatus("Фото збережено локально. Для синхронізації підключіть Supabase.");
+        addSyncLog("локальне фото щоденника", file.name);
+      }
+      closeModal();
+      await renderDiaryFiles();
+      scheduleAutosync();
+    }
+
+    async function trySaveDiaryFileToSupabase(entryId, file, options = {}) {
+      const setup = options.client && options.tripCode ? { client: options.client, tripCode: options.tripCode } : getOptionalSupabaseClient();
+      if (!setup || !navigator.onLine) return false;
+      try {
+        const mimeType = file.type || "application/octet-stream";
+        const duplicate = getDiaryFiles().find(item =>
+          item.entryId === entryId &&
+          item.filename === file.name &&
+          item.mimeType === mimeType &&
+          Number(item.sizeBytes || 0) === Number(file.size || 0) &&
+          item.storagePath
+        );
+        if (duplicate) {
+          options.duplicateId = duplicate.id;
+          addSyncLog("фото вже є у Storage", file.name);
+          return true;
+        }
+        const { client } = setup;
+        const tripCode = normalizeTripCode(setup.tripCode);
+        await upsertTrip(client, tripCode);
+        const id = options.id || generateId();
+        const storagePath = `${safePathPart(tripCode)}/diary/${safePathPart(entryId)}/${id}_${safePathPart(file.name)}`;
+        const { error: uploadError } = await client.storage.from("camino-files").upload(storagePath, file, {
+          cacheControl: "3600",
+          contentType: mimeType,
+          upsert: true
+        });
+        if (uploadError) throw uploadError;
+        const row = {
+          id,
+          trip_code: tripCode,
+          entry_id: entryId,
+          filename: file.name,
+          mime_type: mimeType,
+          storage_path: storagePath,
+          caption: options.caption || "",
+          size_bytes: file.size || 0,
+          created_at: nowISO(),
+          updated_at: nowISO()
+        };
+        await cloudUpsertOptional(client, "diary_files", [row], "id");
+        saveDiaryFiles([rowToDiaryFile(row), ...getDiaryFiles({ includeDeleted: true }).filter(item => item.id !== id)], { markDirty: false });
+        addSyncLog("завантажено фото щоденника", file.name);
+        return true;
+      } catch (error) {
+        setSyncStatus("Помилка синхронізації");
+        addSyncLog("помилка фото щоденника", error.message);
+        if (!options.silent) alert(`Не вдалося завантажити фото в Supabase. Фото буде збережено локально. ${error.message}`);
+        return false;
+      }
+    }
+
+    async function renderDiaryFiles() {
+      const containers = [...document.querySelectorAll("[data-diary-files]")];
+      if (!containers.length) return;
+      await refreshDiaryFileSignedUrls();
+      const localFiles = await dbAll("diaryFiles");
+      const cloudFiles = getDiaryFiles();
+      containers.forEach(container => {
+        const entryId = container.dataset.diaryFiles;
+        const cloudOwn = cloudFiles.filter(file => file.entryId === entryId);
+        const cloudIds = new Set(cloudOwn.map(file => file.id));
+        const localOwn = localFiles.filter(file => file.entryId === entryId && !cloudIds.has(file.cloudId));
+        container.innerHTML = [
+          ...cloudOwn.map(file => diaryCloudFileView(file)),
+          ...localOwn.map(file => diaryLocalFileView(file))
+        ].join("");
+      });
+    }
+
+    async function refreshDiaryFileSignedUrls() {
+      const setup = getOptionalSupabaseClient();
+      if (!setup) return;
+      const files = getDiaryFiles();
+      const needsRefresh = files.filter(file =>
+        file.storagePath &&
+        (!file.signedUrl || new Date(file.signedUrlExpiresAt || 0).getTime() < Date.now() + 60000)
+      );
+      if (!needsRefresh.length) return;
+      const refreshed = new Map();
+      for (const file of needsRefresh) {
+        const { data, error } = await setup.client.storage.from("camino-files").createSignedUrl(file.storagePath, 60 * 60);
+        if (!error) refreshed.set(file.id, { ...file, signedUrl: data.signedUrl, signedUrlExpiresAt: new Date(Date.now() + 55 * 60 * 1000).toISOString() });
+      }
+      if (refreshed.size) saveDiaryFiles(getDiaryFiles({ includeDeleted: true }).map(file => refreshed.get(file.id) || file), { markDirty: false });
+    }
+
+    async function hydrateAndCacheDiaryFiles(client, files) {
+      const hydrated = [];
+      for (const file of files) {
+        if (isSoftDeleted(file) || !file.storagePath) {
+          hydrated.push(file);
+          continue;
+        }
+        const { data, error } = await client.storage.from("camino-files").createSignedUrl(file.storagePath, 60 * 60);
+        const next = error ? file : { ...file, signedUrl: data.signedUrl, signedUrlExpiresAt: new Date(Date.now() + 55 * 60 * 1000).toISOString() };
+        hydrated.push(next);
+        if (next.signedUrl) await cacheDiaryCloudFile(next);
+      }
+      return hydrated;
+    }
+
+    function diaryCloudFileView(file) {
+      const preview = file.signedUrl
+        ? `<img class="thumb" src="${escapeHtml(file.signedUrl)}" alt="${escapeHtml(file.caption || file.filename)}">`
+        : `<div class="thumb">IMG</div>`;
+      return `
+        <div class="attachment">
+          ${preview}
+          <div>
+            <strong>${escapeHtml(file.caption || file.filename)}</strong>
+            <div class="small muted">Supabase Storage · ${escapeHtml(file.filename)} · ${Number(file.sizeBytes || 0)} bytes</div>
+            <div class="actions">
+              <button class="btn ghost" type="button" onclick="openDiaryCloudFile('${file.id}')">Відкрити</button>
+              <button class="btn ghost" type="button" onclick="downloadDiaryCloudFile('${file.id}')">Завантажити</button>
+              <button class="btn danger" type="button" onclick="deleteDiaryCloudFile('${file.id}')">Видалити</button>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function diaryLocalFileView(file) {
+      const url = URL.createObjectURL(file.blob);
+      return `
+        <div class="attachment">
+          <img class="thumb" src="${url}" alt="${escapeHtml(file.caption || file.filename)}">
+          <div>
+            <strong>${escapeHtml(file.caption || file.filename)}</strong>
+            <div class="small muted">Локально · ${escapeHtml(file.mimeType)} · ${new Date(file.createdAt).toLocaleDateString("uk-UA")}</div>
+            <div class="actions">
+              <a class="btn ghost" href="${url}" target="_blank" rel="noopener">Відкрити</a>
+              <button class="btn danger" type="button" onclick="deleteDiaryLocalFile('${file.id}')">Видалити</button>
+            </div>
+          </div>
+        </div>
+      `;
     }
 
     function safePathPart(value) {
@@ -2287,6 +2631,91 @@
       renderAllAttachments();
     }
 
+    async function openDiaryCloudFile(id) {
+      const file = await ensureSignedDiaryFile(id);
+      if (file?.signedUrl) {
+        await cacheDiaryCloudFile(file);
+        window.open(file.signedUrl, "_blank", "noopener");
+      }
+    }
+
+    async function downloadDiaryCloudFile(id) {
+      const file = await ensureSignedDiaryFile(id);
+      if (!file?.signedUrl) return;
+      await cacheDiaryCloudFile(file);
+      const link = document.createElement("a");
+      link.href = file.signedUrl;
+      link.download = file.filename || "camino-diary-photo";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    }
+
+    async function ensureSignedDiaryFile(id) {
+      const files = getDiaryFiles();
+      let file = files.find(item => item.id === id);
+      if (!file) return null;
+      if (file.signedUrl && new Date(file.signedUrlExpiresAt || 0).getTime() > Date.now() + 60000) return file;
+      const setup = getOptionalSupabaseClient();
+      if (!setup) {
+        alert("Підключіть Supabase, щоб відкрити фото з хмари.");
+        return file;
+      }
+      const { data, error } = await setup.client.storage.from("camino-files").createSignedUrl(file.storagePath, 60 * 60);
+      if (error) {
+        setSyncStatus("Помилка синхронізації");
+        addSyncLog("помилка diary signed url", error.message);
+        alert(error.message);
+        return file;
+      }
+      file = { ...file, signedUrl: data.signedUrl, signedUrlExpiresAt: new Date(Date.now() + 55 * 60 * 1000).toISOString() };
+      saveDiaryFiles(getDiaryFiles({ includeDeleted: true }).map(item => item.id === id ? file : item), { markDirty: false });
+      renderDiaryFiles();
+      return file;
+    }
+
+    async function cacheDiaryCloudFile(file) {
+      if (!file?.signedUrl) return;
+      try {
+        const response = await fetch(file.signedUrl);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const blob = await response.blob();
+        await dbPut("diaryFiles", {
+          id: `cloud_${file.id}`,
+          entryId: file.entryId,
+          cloudId: file.id,
+          caption: file.caption || "",
+          blob,
+          filename: file.filename,
+          mimeType: file.mimeType || blob.type || "image/jpeg",
+          sizeBytes: file.sizeBytes || blob.size || 0,
+          createdAt: file.createdAt || nowISO()
+        });
+      } catch (error) {
+        addSyncLog("помилка кешу diary photo", error.message);
+      }
+    }
+
+    async function deleteDiaryLocalFile(id) {
+      await dbDelete("diaryFiles", id);
+      renderDiaryFiles();
+    }
+
+    async function deleteDiaryCloudFile(id, options = {}) {
+      if (!options.skipConfirm && !confirm("Видалити фото щоденника зі Storage?")) return;
+      const files = getAllDiaryFiles();
+      const file = files.find(item => item.id === id);
+      if (!file) return;
+      const deletedAt = nowISO();
+      saveDiaryFiles(files.map(item => String(item.id) === String(id) ? { ...item, deletedAt, updatedAt: deletedAt } : item));
+      setLocalUpdated("diary_files", id, deletedAt);
+      const setup = getOptionalSupabaseClient();
+      if (setup && navigator.onLine) await syncDeletedDiaryFilesToCloud(setup.client, setup.tripCode, { ids: [id] });
+      setSyncStatus("Є локальні зміни");
+      addSyncLog("видалено фото щоденника", file.filename);
+      renderDiaryFiles();
+    }
+
     function getExpenses(options = {}) {
       const expenses = getAllExpenses();
       return options.includeDeleted ? expenses : activeRecords(expenses);
@@ -2346,6 +2775,7 @@
         exportedAt: new Date().toISOString(),
         routePoints: getRoutePoints(),
         bookings: getBookings(),
+        diaryEntries: getDiaryEntries(),
         expenses: getExpenses(),
         notes: localStorage.getItem("camino2026_notes") || "",
         checklists: Object.fromEntries(Object.values(checklists).map(list => [list.storage, readJSON(list.storage, [])]))
@@ -2374,6 +2804,7 @@
               addSyncLog("import route_points", `${importedRoutes.length} received, ${routeDedupe.removed} duplicates removed`);
             }
             if (Array.isArray(data.bookings)) localStorage.setItem(BOOKINGS_KEY, JSON.stringify(data.bookings));
+            if (Array.isArray(data.diaryEntries)) localStorage.setItem(DIARY_KEY, JSON.stringify(data.diaryEntries));
             if (Array.isArray(data.expenses)) localStorage.setItem("camino2026_expenses", JSON.stringify(data.expenses));
             if (typeof data.notes === "string") localStorage.setItem("camino2026_notes", data.notes);
             if (data.checklists) Object.entries(data.checklists).forEach(([key, value]) => localStorage.setItem(key, JSON.stringify(value)));
@@ -2954,6 +3385,79 @@
       };
     }
 
+    function diaryEntryToRow(item, tripCode) {
+      const deleted_at = item.deletedAt || item.deleted_at || null;
+      const localUpdated = getLocalUpdated("diary_entries", item.id);
+      const updated_at = localUpdated === "1970-01-01T00:00:00.000Z" ? (item.updatedAt || item.updated_at || deleted_at || nowISO()) : localUpdated;
+      setLocalUpdated("diary_entries", item.id, updated_at);
+      return {
+        id: item.id,
+        trip_code: normalizeTripCode(tripCode),
+        date: item.date || "",
+        route_point_id: item.routePointId || item.route_point_id || "",
+        title: item.title || "",
+        mood: item.mood || "",
+        weather: item.weather || "",
+        content: item.text || item.content || "",
+        deleted_at,
+        created_at: item.createdAt || item.created_at || nowISO(),
+        updated_at
+      };
+    }
+
+    function rowToDiaryEntry(row, options = {}) {
+      if (options.markUpdated !== false) setLocalUpdated("diary_entries", row.id, row.updated_at || nowISO());
+      return {
+        id: row.id,
+        date: row.date || "",
+        routePointId: row.route_point_id || "",
+        title: row.title || "",
+        mood: row.mood || "",
+        weather: row.weather || "",
+        text: row.content || "",
+        createdAt: row.created_at || nowISO(),
+        updatedAt: row.updated_at || nowISO(),
+        deletedAt: row.deleted_at || ""
+      };
+    }
+
+    function diaryFileToRow(item, tripCode) {
+      const deleted_at = item.deletedAt || item.deleted_at || null;
+      const localUpdated = getLocalUpdated("diary_files", item.id);
+      const updated_at = localUpdated === "1970-01-01T00:00:00.000Z" ? (item.updatedAt || item.updated_at || deleted_at || nowISO()) : localUpdated;
+      setLocalUpdated("diary_files", item.id, updated_at);
+      return {
+        id: item.id,
+        trip_code: normalizeTripCode(tripCode),
+        entry_id: item.entryId || item.entry_id || "",
+        filename: item.filename || "",
+        mime_type: item.mimeType || item.mime_type || "image/jpeg",
+        storage_path: item.storagePath || item.storage_path || "",
+        caption: item.caption || "",
+        size_bytes: Number(item.sizeBytes || item.size_bytes || 0),
+        deleted_at,
+        created_at: item.createdAt || item.created_at || nowISO(),
+        updated_at
+      };
+    }
+
+    function rowToDiaryFile(row, options = {}) {
+      if (options.markUpdated !== false) setLocalUpdated("diary_files", row.id, row.updated_at || nowISO());
+      return {
+        id: row.id,
+        tripCode: row.trip_code || "",
+        entryId: row.entry_id || "",
+        filename: row.filename || "",
+        mimeType: row.mime_type || "image/jpeg",
+        storagePath: row.storage_path || "",
+        caption: row.caption || "",
+        sizeBytes: Number(row.size_bytes || 0),
+        createdAt: row.created_at || nowISO(),
+        updatedAt: row.updated_at || nowISO(),
+        deletedAt: row.deleted_at || ""
+      };
+    }
+
     async function hydrateSignedTicketFiles(client, files) {
       const hydrated = [];
       for (const file of files) {
@@ -3021,6 +3525,35 @@
       if (!rows.length) return;
       const { error } = await client.from(table).upsert(rows, { onConflict });
       if (error) throw error;
+    }
+
+    function isMissingCloudTableError(error = {}) {
+      return /relation .* does not exist|Could not find the table|schema cache|404/i.test(String(error.message || error.details || ""));
+    }
+
+    async function cloudSelectOptional(client, table, tripCode) {
+      const { data, error } = await client.from(table).select("*").eq("trip_code", normalizeTripCode(tripCode));
+      if (error) {
+        if (isMissingCloudTableError(error)) {
+          addSyncLog("optional table missing", table);
+          return [];
+        }
+        throw error;
+      }
+      return data || [];
+    }
+
+    async function cloudUpsertOptional(client, table, rows, onConflict = "id") {
+      if (!rows.length) return false;
+      const { error } = await client.from(table).upsert(rows, { onConflict });
+      if (error) {
+        if (isMissingCloudTableError(error)) {
+          addSyncLog("optional table missing", table);
+          return false;
+        }
+        throw error;
+      }
+      return true;
     }
 
     async function syncDeletedRoutePointsToCloud(client, tripCode) {
@@ -3132,6 +3665,45 @@
       return paths.length;
     }
 
+    async function uploadLocalDiaryFilesToCloud(client, tripCode) {
+      let uploadedCount = 0;
+      const files = await dbAll("diaryFiles");
+      for (const file of files) {
+        if (file.cloudId || !file.blob) continue;
+        const uploaded = await trySaveDiaryFileToSupabase(file.entryId, file.blob, {
+          id: file.id,
+          caption: file.caption || "",
+          client,
+          tripCode,
+          silent: true
+        });
+        if (uploaded) {
+          await dbPut("diaryFiles", { ...file, cloudId: file.id });
+          uploadedCount += 1;
+        }
+      }
+      if (uploadedCount) addSyncLog("завантажено фото щоденника", `${uploadedCount}`);
+      return uploadedCount;
+    }
+
+    async function syncDeletedDiaryFilesToCloud(client, tripCode, options = {}) {
+      const wantedIds = new Set((options.ids || []).map(String));
+      const deletedFiles = getAllDiaryFiles().filter(file =>
+        isSoftDeleted(file) &&
+        file.storagePath &&
+        (!wantedIds.size || wantedIds.has(String(file.id)))
+      );
+      if (!deletedFiles.length) return 0;
+      await cloudUpsertOptional(client, "diary_files", deletedFiles.map(file => diaryFileToRow(file, tripCode)), "id");
+      const paths = [...new Set(deletedFiles.map(file => file.storagePath).filter(Boolean))];
+      if (paths.length) {
+        const { error } = await client.storage.from("camino-files").remove(paths);
+        if (error) addSyncLog("помилка diary Storage delete", error.message);
+      }
+      addSyncLog("видалено фото щоденника зі Storage", `${paths.length}`);
+      return paths.length;
+    }
+
     async function uploadLocalToCloud() {
       try {
         setSyncStatus("Синхронізація…");
@@ -3139,15 +3711,21 @@
         await upsertTrip(client, tripCode);
         await syncDeletedRoutePointsToCloud(client, tripCode);
         await syncDeletedTicketFilesToCloud(client, tripCode);
+        await syncDeletedDiaryFilesToCloud(client, tripCode);
         const storageUploaded = await uploadLocalFilesToCloud(client, tripCode);
+        const diaryStorageUploaded = await uploadLocalDiaryFilesToCloud(client, tripCode);
         const routeDedupe = dedupeRoutePoints({ points: getRoutePoints(), preview: true, applyReferenceMap: true });
         const sortedRoutes = sortTimelineEvents(routeDedupe.items);
         saveRoutePoints(sortedRoutes, { markDirty: false });
         const ticketRows = getBookings({ includeDeleted: true }).map(item => ticketToRow(item, tripCode));
         const fileRows = getTicketFiles({ includeDeleted: true }).map(item => ticketFileToRow(item, tripCode));
+        const diaryRows = getDiaryEntries({ includeDeleted: true }).map(item => diaryEntryToRow(item, tripCode));
+        const diaryFileRows = getDiaryFiles({ includeDeleted: true }).map(item => diaryFileToRow(item, tripCode));
         const routeStats = await upsertRoutePointsToSupabase(client, tripCode, sortedRoutes);
         await cloudUpsert(client, "tickets", ticketRows);
         await cloudUpsert(client, "ticket_files", fileRows);
+        await cloudUpsertOptional(client, "diary_entries", diaryRows);
+        await cloudUpsertOptional(client, "diary_files", diaryFileRows);
         await cloudUpsert(client, "expenses", getExpenses({ includeDeleted: true }).map(item => expenseToRow(item, tripCode)));
         await uploadNotes(client, tripCode);
         await uploadChecklists(client, tripCode);
@@ -3158,6 +3736,8 @@
         addSyncLog("uploaded tickets", `${ticketRows.length}`);
         addSyncLog("uploaded ticket_files", `${fileRows.length}`);
         addSyncLog("storage uploaded files", `${storageUploaded}`);
+        addSyncLog("uploaded diary entries/files", `${diaryRows.length}/${diaryFileRows.length}`);
+        addSyncLog("storage uploaded diary photos", `${diaryStorageUploaded}`);
       } catch (error) {
         setSyncStatus(`Помилка синхронізації: ${error.message}`);
         addSyncLog("errors", error.message);
@@ -3170,11 +3750,14 @@
         const { client, tripCode } = getSupabaseClient();
         await syncDeletedRoutePointsToCloud(client, tripCode);
         await syncDeletedTicketFilesToCloud(client, tripCode);
-        const [cloudRoutesRaw, tickets, ticketFiles, expenses] = await Promise.all([
+        await syncDeletedDiaryFilesToCloud(client, tripCode);
+        const [cloudRoutesRaw, tickets, ticketFiles, expenses, diaryRows, diaryFiles] = await Promise.all([
           cloudSelect(client, "route_points", tripCode),
           cloudSelect(client, "tickets", tripCode),
           cloudSelect(client, "ticket_files", tripCode),
-          cloudSelect(client, "expenses", tripCode)
+          cloudSelect(client, "expenses", tripCode),
+          cloudSelectOptional(client, "diary_entries", tripCode),
+          cloudSelectOptional(client, "diary_files", tripCode)
         ]);
         const routes = filterDeletedRouteRows(cloudRoutesRaw);
         const routeBase = routeMergeBase(routes);
@@ -3186,9 +3769,13 @@
         const ticketMerge = mergeCloudRows(getBookings({ includeDeleted: true }), remappedTickets.rows, rowToTicket);
         const expenseMerge = mergeCloudRows(getExpenses({ includeDeleted: true }), expenses, rowToExpense);
         const fileMerge = mergeCloudRows(getTicketFiles({ includeDeleted: true }), remappedTicketFiles.rows, rowToTicketFile);
+        const diaryMerge = mergeCloudRows(getDiaryEntries({ includeDeleted: true }), diaryRows, rowToDiaryEntry);
+        const diaryFileMerge = mergeCloudRows(getDiaryFiles({ includeDeleted: true }), diaryFiles, rowToDiaryFile);
         localStorage.setItem(ROUTE_KEY, JSON.stringify(sortedRoutes));
         localStorage.setItem(BOOKINGS_KEY, JSON.stringify(ticketMerge.items));
         saveTicketFiles(await hydrateAndCacheTicketFiles(client, fileMerge.items), { markDirty: false });
+        saveDiaryEntries(diaryMerge.items, { includeDeleted: true, markDirty: false });
+        saveDiaryFiles(await hydrateAndCacheDiaryFiles(client, diaryFileMerge.items), { markDirty: false });
         localStorage.setItem("camino2026_expenses", JSON.stringify(expenseMerge.items));
         await pullNotes(client, tripCode);
         await pullChecklists(client, tripCode);
@@ -3205,6 +3792,7 @@
         addSyncLog("downloaded route_points", `${routes.length} (${routeMerge.added} added, ${routeMerge.updated} updated)`);
         addSyncLog("downloaded tickets", `${tickets.length} (${ticketMerge.added} added, ${ticketMerge.updated} updated)`);
         addSyncLog("downloaded ticket_files", `${ticketFiles.length} (${fileMerge.added} added, ${fileMerge.updated} updated)`);
+        addSyncLog("downloaded diary", `${diaryRows.length} entries, ${diaryFiles.length} files`);
         refresh();
         logRenderedTicketCards();
       } catch (error) {
@@ -3247,6 +3835,8 @@
           ROUTE_KEY,
           BOOKINGS_KEY,
           TICKET_FILES_KEY,
+          DIARY_KEY,
+          DIARY_FILES_KEY,
           DELETED_ROUTE_POINTS_KEY,
           "camino2026_expenses",
           "camino2026_notes",
@@ -3256,8 +3846,8 @@
           "camino2026_shared",
           "camino2026_med"
         ].forEach(key => localStorage.removeItem(key));
-        await Promise.all([dbClear("routeAttachments"), dbClear("attachments")]);
-        addSyncLog("local cleared", "route_points, tickets, ticket_files, checklists, notes, expenses, IndexedDB files");
+        await Promise.all([dbClear("routeAttachments"), dbClear("attachments"), dbClear("diaryFiles")]);
+        addSyncLog("local cleared", "route_points, tickets, ticket_files, diary, checklists, notes, expenses, IndexedDB files");
         await forceDownloadFromSupabase({ replaceLocal: true });
       } catch (error) {
         setSyncStatus(`помилка очищення: ${error.message}`);
@@ -3272,12 +3862,15 @@
         await upsertTrip(client, tripCode);
         await syncDeletedRoutePointsToCloud(client, tripCode);
         await syncDeletedTicketFilesToCloud(client, tripCode);
-        const [cloudRoutesRaw, tickets, ticketFiles, expenses, checklistsRows, notesResult] = await Promise.all([
+        await syncDeletedDiaryFilesToCloud(client, tripCode);
+        const [cloudRoutesRaw, tickets, ticketFiles, expenses, checklistsRows, diaryRows, diaryFiles, notesResult] = await Promise.all([
           cloudSelect(client, "route_points", tripCode),
           cloudSelect(client, "tickets", tripCode),
           cloudSelect(client, "ticket_files", tripCode),
           cloudSelect(client, "expenses", tripCode),
           cloudSelect(client, "checklists", tripCode),
+          cloudSelectOptional(client, "diary_entries", tripCode),
+          cloudSelectOptional(client, "diary_files", tripCode),
           client.from("notes").select("*").eq("trip_code", normalizeTripCode(tripCode)).maybeSingle()
         ]);
         const routes = filterDeletedRouteRows(cloudRoutesRaw);
@@ -3285,6 +3878,8 @@
         const routeBase = routeMergeBase(routes, options);
         const ticketBase = options.replaceLocal ? [] : getBookings({ includeDeleted: true });
         const fileBase = options.replaceLocal ? [] : getTicketFiles({ includeDeleted: true });
+        const diaryBase = options.replaceLocal ? [] : getDiaryEntries({ includeDeleted: true });
+        const diaryFileBase = options.replaceLocal ? [] : getDiaryFiles({ includeDeleted: true });
         const expenseBase = options.replaceLocal ? [] : getExpenses({ includeDeleted: true });
         const routeMerge = mergeCloudRows(routeBase, routes.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)), rowToRoute);
         const routeDedupe = dedupeRoutePoints({ points: routeMerge.items, preview: true, applyReferenceMap: true, tickets: [...ticketBase, ...tickets], ticketFiles: [...fileBase, ...ticketFiles] });
@@ -3293,11 +3888,15 @@
         const sortedRoutes = sortTimelineEvents(routeDedupe.items);
         const ticketMerge = mergeCloudRows(ticketBase, remappedTickets.rows, rowToTicket);
         const fileMerge = mergeCloudRows(fileBase, remappedTicketFiles.rows, rowToTicketFile);
+        const diaryMerge = mergeCloudRows(diaryBase, diaryRows, rowToDiaryEntry);
+        const diaryFileMerge = mergeCloudRows(diaryFileBase, diaryFiles, rowToDiaryFile);
         const expenseMerge = mergeCloudRows(expenseBase, expenses, rowToExpense);
         const fileLinks = analyzeTicketFileLinks(fileMerge.items, sortedRoutes, ticketMerge.items);
         localStorage.setItem(ROUTE_KEY, JSON.stringify(sortedRoutes));
         localStorage.setItem(BOOKINGS_KEY, JSON.stringify(ticketMerge.items));
         saveTicketFiles(await hydrateAndCacheTicketFiles(client, fileMerge.items), { markDirty: false });
+        saveDiaryEntries(diaryMerge.items, { includeDeleted: true, markDirty: false });
+        saveDiaryFiles(await hydrateAndCacheDiaryFiles(client, diaryFileMerge.items), { markDirty: false });
         localStorage.setItem("camino2026_expenses", JSON.stringify(expenseMerge.items));
         checklistsRows.forEach(row => {
           localStorage.setItem(row.list_key, JSON.stringify(row.state || []));
@@ -3318,6 +3917,7 @@
         addSyncLog("downloaded route_points", `${routes.length} (${routeMerge.added} added, ${routeMerge.updated} updated)`);
         addSyncLog("downloaded tickets", `${tickets.length} (${ticketMerge.added} added, ${ticketMerge.updated} updated)`);
         addSyncLog("downloaded ticket_files", `${ticketFiles.length} (${fileMerge.added} added, ${fileMerge.updated} updated)`);
+        addSyncLog("downloaded diary", `${diaryRows.length} entries, ${diaryFiles.length} files`);
         addSyncLog("downloaded checklists", `${checklistsRows.length}`);
         addSyncLog("downloaded expenses", `${expenses.length} (${expenseMerge.added} added, ${expenseMerge.updated} updated)`);
         const reportHtml = `
@@ -3325,6 +3925,7 @@
           <div class="soft small">route_points: ${routes.length} (${routeMerge.added} added, ${routeMerge.updated} updated, ${routeDedupe.removed} duplicates removed)</div>
           <div class="soft small">tickets: ${tickets.length} (${ticketMerge.added} added, ${ticketMerge.updated} updated)</div>
           <div class="soft small">ticket_files: ${ticketFiles.length} (${fileMerge.added} added, ${fileMerge.updated} updated)</div>
+          <div class="soft small">diary: ${diaryRows.length} entries, ${diaryFiles.length} files</div>
           <div class="soft small">remapped tickets: ${remappedTickets.remapped}, remapped ticket_files: ${remappedTicketFiles.remapped}</div>
           <div class="soft small">file links: route_points ${fileLinks.route}, bookings ${fileLinks.booking}, missing ${fileLinks.missing}</div>
           <div class="soft small">checklists: ${checklistsRows.length}, notes: ${notesResult.data ? 1 : 0}, expenses: ${expenses.length}</div>
@@ -3355,12 +3956,16 @@
         await upsertTrip(client, tripCode);
         await syncDeletedRoutePointsToCloud(client, tripCode);
         await syncDeletedTicketFilesToCloud(client, tripCode);
+        await syncDeletedDiaryFilesToCloud(client, tripCode);
         const storageUploaded = await uploadLocalFilesToCloud(client, tripCode);
+        const diaryStorageUploaded = await uploadLocalDiaryFilesToCloud(client, tripCode);
 
-        const [cloudRoutesRaw, cloudTickets, cloudTicketFiles] = await Promise.all([
+        const [cloudRoutesRaw, cloudTickets, cloudTicketFiles, cloudDiaryRows, cloudDiaryFiles] = await Promise.all([
           cloudSelect(client, "route_points", tripCode),
           cloudSelect(client, "tickets", tripCode),
-          cloudSelect(client, "ticket_files", tripCode)
+          cloudSelect(client, "ticket_files", tripCode),
+          cloudSelectOptional(client, "diary_entries", tripCode),
+          cloudSelectOptional(client, "diary_files", tripCode)
         ]);
         const cloudRoutes = filterDeletedRouteRows(cloudRoutesRaw);
         const localRouteDedupe = dedupeRoutePoints({ points: routeMergeBase(cloudRoutes), preview: true, log: false, applyReferenceMap: true, tickets: [...getBookings({ includeDeleted: true }), ...cloudTickets], ticketFiles: [...getTicketFiles({ includeDeleted: true }), ...cloudTicketFiles] });
@@ -3414,6 +4019,19 @@
         addSyncLog("uploaded ticket_files", `${localFileRows.length}`);
         addSyncLog("downloaded ticket_files", `${cloudTicketFiles.length}`);
         addSyncLog("storage uploaded files", `${storageUploaded}`);
+
+        const diaryResult = mergeByUpdatedAt(getDiaryEntries({ includeDeleted: true }), cloudDiaryRows, "diary_entries", rowToDiaryEntry, item => diaryEntryToRow(item, tripCode));
+        saveDiaryEntries(diaryResult.local, { includeDeleted: true, markDirty: false });
+        await cloudUpsertOptional(client, "diary_entries", diaryResult.pushRows);
+        const localDiaryFiles = getDiaryFiles({ includeDeleted: true });
+        const diaryFileResult = mergeByUpdatedAt(localDiaryFiles, cloudDiaryFiles, "diary_files", rowToDiaryFile, item => diaryFileToRow(item, tripCode));
+        const hydratedDiaryFiles = await hydrateAndCacheDiaryFiles(client, diaryFileResult.local);
+        saveDiaryFiles(hydratedDiaryFiles, { markDirty: false });
+        hydratedDiaryFiles.forEach(file => setLocalUpdated("diary_files", file.id, file.updatedAt || nowISO()));
+        await cloudUpsertOptional(client, "diary_files", diaryFileResult.pushRows);
+        addSyncLog("uploaded diary", `${diaryResult.pushRows.length} entries, ${diaryFileResult.pushRows.length} files`);
+        addSyncLog("downloaded diary", `${cloudDiaryRows.length} entries, ${cloudDiaryFiles.length} files`);
+        addSyncLog("storage uploaded diary photos", `${diaryStorageUploaded}`);
 
         const cloudExpenses = await cloudSelect(client, "expenses", tripCode);
         const expenseResult = mergeByUpdatedAt(getExpenses({ includeDeleted: true }), cloudExpenses, "expenses", rowToExpense, item => expenseToRow(item, tripCode));

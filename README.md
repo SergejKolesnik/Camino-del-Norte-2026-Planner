@@ -186,6 +186,34 @@ create table if not exists public.ticket_files (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists public.diary_entries (
+  id text primary key,
+  trip_code text not null references public.trips(code) on delete cascade,
+  date text,
+  route_point_id text,
+  title text,
+  mood text,
+  weather text,
+  content text,
+  deleted_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.diary_files (
+  id text primary key,
+  trip_code text not null references public.trips(code) on delete cascade,
+  entry_id text not null,
+  filename text not null,
+  mime_type text not null default 'image/jpeg',
+  storage_path text not null,
+  caption text,
+  size_bytes bigint not null default 0,
+  deleted_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 create table if not exists public.expenses (
   id text primary key,
   trip_code text not null references public.trips(code) on delete cascade,
@@ -222,6 +250,11 @@ create index if not exists tickets_trip_deleted_idx on public.tickets(trip_code,
 create index if not exists ticket_files_trip_ticket_idx on public.ticket_files(trip_code, ticket_id);
 create index if not exists ticket_files_trip_deleted_idx on public.ticket_files(trip_code, deleted_at);
 create unique index if not exists ticket_files_storage_path_unique_idx on public.ticket_files(storage_path);
+create index if not exists diary_entries_trip_date_idx on public.diary_entries(trip_code, date);
+create index if not exists diary_entries_trip_deleted_idx on public.diary_entries(trip_code, deleted_at);
+create index if not exists diary_files_trip_entry_idx on public.diary_files(trip_code, entry_id);
+create index if not exists diary_files_trip_deleted_idx on public.diary_files(trip_code, deleted_at);
+create unique index if not exists diary_files_storage_path_unique_idx on public.diary_files(storage_path);
 
 -- Migration for older installs where ticket_files.ticket_id had an FK to tickets(id).
 -- Timeline documents use route_points.id as the same owner id, so this FK must be removed.
@@ -253,6 +286,16 @@ create trigger trg_ticket_files_updated_at
 before update on public.ticket_files
 for each row execute function public.set_updated_at();
 
+drop trigger if exists trg_diary_entries_updated_at on public.diary_entries;
+create trigger trg_diary_entries_updated_at
+before update on public.diary_entries
+for each row execute function public.set_updated_at();
+
+drop trigger if exists trg_diary_files_updated_at on public.diary_files;
+create trigger trg_diary_files_updated_at
+before update on public.diary_files
+for each row execute function public.set_updated_at();
+
 drop trigger if exists trg_expenses_updated_at on public.expenses;
 create trigger trg_expenses_updated_at
 before update on public.expenses
@@ -272,9 +315,15 @@ alter table public.trips enable row level security;
 alter table public.route_points enable row level security;
 alter table public.tickets enable row level security;
 alter table public.ticket_files enable row level security;
+alter table public.diary_entries enable row level security;
+alter table public.diary_files enable row level security;
 alter table public.expenses enable row level security;
 alter table public.notes enable row level security;
 alter table public.checklists enable row level security;
+
+grant usage on schema public to anon, authenticated;
+grant select, insert, update, delete on public.diary_entries to anon, authenticated;
+grant select, insert, update, delete on public.diary_files to anon, authenticated;
 
 drop policy if exists "anon_all_trips" on public.trips;
 create policy "anon_all_trips" on public.trips
@@ -291,6 +340,16 @@ for all to anon using (true) with check (true);
 drop policy if exists "anon_all_ticket_files" on public.ticket_files;
 create policy "anon_all_ticket_files" on public.ticket_files
 for all to anon using (true) with check (true);
+
+drop policy if exists "anon_all_diary_entries" on public.diary_entries;
+create policy "anon_all_diary_entries" on public.diary_entries
+for all to anon using (true) with check (true);
+
+drop policy if exists "anon_all_diary_files" on public.diary_files;
+create policy "anon_all_diary_files" on public.diary_files
+for all to anon using (true) with check (true);
+
+notify pgrst, 'reload schema';
 
 drop policy if exists "anon_all_expenses" on public.expenses;
 create policy "anon_all_expenses" on public.expenses
@@ -363,6 +422,8 @@ using (bucket_id = 'camino-files');
 - маршрутні точки;
 - квитки та бронювання;
 - файли квитків і бронювань через Supabase Storage bucket `camino-files` та таблицю `ticket_files`;
+- записи щоденника через таблицю `diary_entries`;
+- фото щоденника через Supabase Storage bucket `camino-files` та таблицю `diary_files`;
 - бюджет;
 - нотатки;
 - стани чек-листів.
@@ -371,9 +432,9 @@ using (bucket_id = 'camino-files');
 
 ## Файли та fallback
 
-Якщо Supabase підключений, скріншоти квитків, PDF і бронювання завантажуються у Storage bucket `camino-files`, а metadata зберігається в таблиці `ticket_files`.
+Якщо Supabase підключений, скріншоти квитків, PDF, бронювання і фото щоденника завантажуються у Storage bucket `camino-files`. Metadata квиткових файлів зберігається в `ticket_files`, metadata фото щоденника - в `diary_files`.
 
-Якщо Supabase не підключений або недоступний, файл зберігається локально в IndexedDB і застосунок показує повідомлення: `Файл збережено локально. Для синхронізації підключіть Supabase.`
+Якщо Supabase не підключений або недоступний, файл зберігається локально в IndexedDB і застосунок показує повідомлення на кшталт `Файл збережено локально. Для синхронізації підключіть Supabase.`
 
 Після підключення Supabase локальні IndexedDB-файли автоматично завантажуються у Storage під час `Upload` або `Sync`, якщо вони ще не мають `cloudId`.
 
@@ -381,7 +442,25 @@ using (bucket_id = 'camino-files');
 
 Локальні IndexedDB-файли без `cloudId` не потрапляють на інші пристрої, доки не відбудеться успішний sync із Supabase.
 
-Для роботи Storage у SQL мають бути створені bucket `camino-files` і policies на `storage.objects` для `select`, `insert`, `update`, `delete`. Якщо файли не завантажуються або не видаляються, спочатку перевірте саме цей блок SQL.
+Для роботи Storage у SQL мають бути створені bucket `camino-files`, таблиці `ticket_files` / `diary_files` і policies на `storage.objects` для `select`, `insert`, `update`, `delete`. Якщо файли не завантажуються або не видаляються, спочатку перевірте саме цей блок SQL.
+
+## Щоденник подорожі
+
+Вкладка `Щоденник` дозволяє створювати записи з датою, прив'язкою до точки маршруту, настроєм, погодою, текстом і фото.
+
+Фото зберігаються так:
+
+- з Supabase: `camino-files/camino-2026/diary/<entry_id>/...`;
+- без Supabase: локально в IndexedDB store `diaryFiles`;
+- JSON backup експортує тільки текстові записи щоденника, без фото.
+
+Щоб фото щоденника були доступні на другому телефоні, виконайте SQL schema з таблицями `diary_entries` і `diary_files`, підключіть Supabase в PWA і натисніть `Sync`.
+
+Для вже налаштованої бази можна не запускати весь великий SQL повторно, а виконати тільки файл:
+
+```text
+supabase-diary.sql
+```
 
 ## Як перевірити синхронізацію
 
@@ -402,10 +481,10 @@ using (bucket_id = 'camino-files');
 
 Локальні дані:
 
-- маршрут, квитки, бюджет, нотатки, чек-листи, sync config - `localStorage`;
-- локальні fallback-скріни, PDF і вкладення - `IndexedDB`;
-- хмарні файли квитків - Supabase Storage `camino-files`.
+- маршрут, квитки, бюджет, нотатки, чек-листи, щоденник, sync config - `localStorage`;
+- локальні fallback-скріни, PDF, вкладення і фото щоденника - `IndexedDB`;
+- хмарні файли квитків і фото щоденника - Supabase Storage `camino-files`.
 
 ## Експорт та імпорт
 
-У розділі `Дані` можна експортувати або імпортувати JSON. Файли не входять у JSON-експорт.
+У розділі `☁️ Синхр.` є блок `Backup JSON`: там можна експортувати або імпортувати JSON. Файли і фото не входять у JSON-експорт.
