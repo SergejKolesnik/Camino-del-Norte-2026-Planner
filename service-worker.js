@@ -1,4 +1,4 @@
-const CACHE_NAME = "camino-del-norte-2026-v21-storage-sync-hardening";
+const CACHE_NAME = "camino-del-norte-2026-v22-diary-backup-ux";
 const APP_SHELL = [
   "./",
   "./index.html",
