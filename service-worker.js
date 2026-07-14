@@ -1,4 +1,4 @@
-const CACHE_NAME = "camino-del-norte-2026-v23-mobile-ux-shell";
+const CACHE_NAME = "camino-del-norte-2026-v24-dark-ocean-theme";
 const APP_SHELL = [
   "./",
   "./index.html",
