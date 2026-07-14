@@ -870,6 +870,73 @@
       }, []);
     }
 
+    function googleMapsSearchUrl(query) {
+      const value = cleanText(query);
+      return value ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(value)}` : "";
+    }
+
+    function googleMapsPointUrl(point = {}, options = {}) {
+      if (!options.ignoreCustomUrl && cleanText(point.mapsUrl)) return cleanText(point.mapsUrl);
+      return googleMapsSearchUrl(point.address || point.to || point.from);
+    }
+
+    function travelModeForPoint(point = {}) {
+      const type = cleanText(point.type).toLowerCase();
+      if (type.includes("walk") || type.includes("піш") || type.includes("camino")) return "walking";
+      if (type.includes("car") || type.includes("авто") || type.includes("transfer") || type.includes("трансфер")) return "driving";
+      if (type.includes("train") || type.includes("поїзд") || type.includes("bus") || type.includes("автобус")) return "transit";
+      return "driving";
+    }
+
+    function googleMapsDirectionsUrl(point = {}) {
+      const from = cleanText(point.from);
+      const to = cleanText(point.to);
+      if (!from || !to) return "";
+      return `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(from)}&destination=${encodeURIComponent(to)}&travelmode=${travelModeForPoint(point)}`;
+    }
+
+    function openExternalMap(event, url) {
+      if (!navigator.onLine) {
+        event.preventDefault();
+        alert("Для відкриття Google Maps потрібен інтернет.");
+        return false;
+      }
+      if (!url || url.endsWith("#")) {
+        event.preventDefault();
+        alert("Для цієї точки немає достатньо даних для Google Maps.");
+        return false;
+      }
+      return true;
+    }
+
+    function mapLink(href, label, className = "btn ghost") {
+      const safeHref = href || "#";
+      const handler = href ? "return openExternalMap(event, this.href)" : "return openExternalMap(event, '')";
+      return `<a class="${className}" href="${escapeHtml(safeHref)}" target="_blank" rel="noopener noreferrer" onclick="${handler}">${label}</a>`;
+    }
+
+    function renderMapActions(point) {
+      return `
+        ${mapLink(googleMapsPointUrl(point), "📍 Відкрити точку")}
+        ${mapLink(googleMapsDirectionsUrl(point), "🧭 Побудувати маршрут", "btn secondary")}
+      `;
+    }
+
+    function generateMapsUrlForForm() {
+      const url = googleMapsPointUrl({
+        address: val("address"),
+        to: val("to"),
+        from: val("from"),
+        mapsUrl: ""
+      }, { ignoreCustomUrl: true });
+      if (!url) {
+        alert("Додайте адресу, пункт прибуття або пункт відправлення.");
+        return;
+      }
+      const input = document.getElementById("mapsUrl");
+      if (input) input.value = url;
+    }
+
     function mergeRouteDuplicate(base, duplicate) {
       const merged = { ...base };
       ["date", "time", "type", "from", "to", "title", "address", "note", "mapsUrl", "status"].forEach(key => {
@@ -1143,9 +1210,9 @@
           ${item.address ? `<p class="point-note"><b>Адреса:</b> ${escapeHtml(item.address)}</p>` : ""}
           ${item.note ? `<p class="point-note">${escapeHtml(item.note)}</p>` : ""}
           ${linkedTickets.map(ticket => `<p class="point-note"><b>${escapeHtml(ticket.type || "квиток")}:</b> ${escapeHtml(ticket.name || ticket.bookingNumber || "без назви")}${ticket.bookingNumber ? ` · ${escapeHtml(ticket.bookingNumber)}` : ""}${ticket.note ? ` · ${escapeHtml(ticket.note)}` : ""}</p>`).join("")}
-          ${item.mapsUrl ? `<p><a href="${escapeHtml(item.mapsUrl)}" target="_blank" rel="noopener">Google Maps</a></p>` : ""}
           <div class="attachments" data-route-files="${item.id}"></div>
           <div class="actions">
+            ${renderMapActions(item)}
             <button class="btn ghost" type="button" onclick="openPointForm('${item.id}')">Редагувати</button>
             <button class="btn ghost" type="button" onclick="copyPoint('${item.id}')">Скопіювати</button>
             ${options.autoSort ? "" : `<button class="btn secondary" type="button" onclick="movePoint('${item.id}', -1)" ${index === 0 ? "disabled" : ""}>Вгору</button><button class="btn secondary" type="button" onclick="movePoint('${item.id}', 1)" ${index === total - 1 ? "disabled" : ""}>Вниз</button>`}
@@ -1219,9 +1286,9 @@
           ${place ? `<p class="point-note"><b>Маршрут / місце:</b> ${escapeHtml(place)}</p>` : ""}
           ${item.address ? `<p class="point-note"><b>Адреса:</b> ${escapeHtml(item.address)}</p>` : ""}
           ${item.note ? `<p class="point-note">${escapeHtml(item.note)}</p>` : ""}
-          ${item.mapsUrl ? `<p><a href="${escapeHtml(item.mapsUrl)}" target="_blank" rel="noopener">Google Maps</a></p>` : ""}
           <div class="attachments" data-route-files="${item.id}"></div>
           <div class="actions">
+            ${renderMapActions(item)}
             <button class="btn ghost" type="button" onclick="openTimelineForRoutePoint('${item.id}')">Відкрити у таймлайні</button>
             <button class="btn ghost" type="button" onclick="openRouteFileForm('${item.id}')">Додати PDF / фото / QR</button>
             <button class="btn secondary" type="button" onclick="openPointForm('${item.id}')">Змінити тип події</button>
@@ -1527,6 +1594,7 @@
           ${field("Рейс або поїзд", "title", "text", item.title)}
           ${field("Адреса / станція / аеропорт", "address", "text", item.address)}
           ${field("Google Maps", "mapsUrl", "url", item.mapsUrl)}
+          <div class="actions"><button class="btn ghost" type="button" onclick="generateMapsUrlForForm()">Згенерувати автоматично</button></div>
           ${selectField("Статус", "status", statuses, item.status)}
           <div class="field"><label for="note">Примітка</label><textarea id="note">${escapeHtml(item.note)}</textarea></div>
         </div>
