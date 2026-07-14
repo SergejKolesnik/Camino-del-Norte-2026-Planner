@@ -26,6 +26,43 @@ Supabase URL/key не хардкодяться. Їх потрібно ввест
 
 Мобільний офлайн travel-planner / PWA без фреймворків. Основний режим роботи локальний: `localStorage` + `IndexedDB`. Supabase-синхронізація є необов'язковою: текстові дані синхронізуються через таблиці, а файли квитків - через Supabase Storage bucket `camino-files`.
 
+## Основний репозиторій і workflow
+
+GitHub є основним джерелом правди для проєкту. Робоча локальна копія:
+
+```text
+C:\Users\rjktc\Documents\Codex\2026-07-07\Camino-del-Norte-2026-Planner
+```
+
+Старі копії в `outputs` більше не редагуються, щоб не підтримувати кілька різних версій одного застосунку.
+
+Перед початком роботи:
+
+```bash
+git checkout main
+git pull origin main
+```
+
+Для нової зміни:
+
+```bash
+git checkout -b feature/nazva-zminy
+```
+
+Після перевірки:
+
+```bash
+git add .
+git commit -m "Short clear change description"
+git push origin feature/nazva-zminy
+```
+
+Після merge у `main` GitHub Pages автоматично публікує оновлену PWA за адресою:
+
+```text
+https://sergejkolesnik.github.io/Camino-del-Norte-2026-Planner/
+```
+
 ## Route point sync integrity
 
 Канонічний код подорожі: `camino-2026`. Старий код `camino2026` застосунок автоматично нормалізує до `camino-2026`.
