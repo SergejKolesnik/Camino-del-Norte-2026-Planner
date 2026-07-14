@@ -1,4 +1,4 @@
-const CACHE_NAME = "camino-del-norte-2026-v22-diary-backup-ux";
+const CACHE_NAME = "camino-del-norte-2026-v23-mobile-ux-shell";
 const APP_SHELL = [
   "./",
   "./index.html",

@@ -331,6 +331,26 @@
     }
     .empty { padding: 16px; border-radius: 16px; background: rgba(255,255,255,.58); color: var(--muted); text-align: center; }
 
+    .more-grid {
+      display: grid;
+      gap: 10px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .more-tile {
+      display: grid;
+      align-content: start;
+      gap: 6px;
+      min-height: 112px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      color: var(--ink);
+      text-align: left;
+      background: rgba(255,255,255,.68);
+    }
+    .more-tile strong { font-size: 16px; }
+    .more-tile span { color: var(--muted); font-size: 12px; line-height: 1.35; }
+
     details { margin: 10px 0; padding: 12px; border: 1px solid var(--line); border-radius: 16px; background: rgba(255,255,255,.62); }
     summary { min-height: 34px; cursor: pointer; font-weight: 900; }
     ul.clean { margin: 8px 0 0; padding-left: 20px; }
@@ -410,6 +430,7 @@
       .topbar { margin-left: -22px; margin-right: -22px; padding-left: 22px; padding-right: 22px; }
       .form-grid { grid-template-columns: repeat(2, 1fr); }
       .timeline { grid-template-columns: repeat(2, 1fr); }
+      .more-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
       .nav-btn { flex-basis: 92px; }
     }
   </style>
@@ -516,7 +537,15 @@
       { id: "budget", icon: "€", label: "Бюджет", render: renderBudget },
       { id: "diary", icon: "📔", label: "Щоденник", render: renderDiary },
       { id: "notes", icon: "Н", label: "Нотатки", render: renderNotes },
-      { id: "sync", icon: "", label: "☁️ Синхр.", render: renderSync }
+      { id: "sync", icon: "", label: "☁️ Синхр.", render: renderSync },
+      { id: "more", icon: "•••", label: "Ще", render: renderMore }
+    ];
+    const navScreens = [
+      { id: "today", icon: "◉", label: "Сьогодні" },
+      { id: "timeline", icon: "↦", label: "Маршрут" },
+      { id: "bookings", icon: "▣", label: "Квитки" },
+      { id: "diary", icon: "📔", label: "Щоденник" },
+      { id: "more", icon: "•••", label: "Ще" }
     ];
 
     const screenRoot = document.getElementById("screens");
@@ -1300,23 +1329,38 @@
 
     function renderToday() {
       const item = closestPoint();
+      const title = item.title || routeGeneratedTitle(item);
+      const docsCount = getTicketFiles().filter(file => file.ticketId === item.id).length;
+      const linkedTickets = getRoutePointTickets(item.id).length;
       return `
         <section class="screen active" id="screen-today">
           <div class="hero">
-            <h2>Найближча точка</h2>
-            <p>${escapeHtml(item.date)} ${escapeHtml(item.time || "")} · ${escapeHtml(item.from)} → ${escapeHtml(item.to)}</p>
+            <h2>Сьогодні в дорозі</h2>
+            <p>${escapeHtml(item.date || "без дати")} ${escapeHtml(item.time || "")} · ${escapeHtml(routeGeneratedTitle(item))}</p>
             <div class="stats">
               <div class="stat"><b>${escapeHtml(item.type)}</b><span>тип</span></div>
               <div class="stat"><b>${escapeHtml(item.status)}</b><span>статус</span></div>
-              <div class="stat"><b>${getRoutePoints().length}</b><span>точок</span></div>
+              <div class="stat"><b>${docsCount + linkedTickets}</b><span>документів</span></div>
             </div>
           </div>
           <div class="card">
-            <h2>${escapeHtml(item.title || "Маршрутна точка")}</h2>
+            <h2>${escapeHtml(title || "Маршрутна точка")}</h2>
+            <p class="point-note"><b>Маршрут:</b> ${escapeHtml(item.from || "старт")}${item.to ? ` → ${escapeHtml(item.to)}` : ""}</p>
+            ${item.address ? `<p class="point-note"><b>Адреса:</b> ${escapeHtml(item.address)}</p>` : ""}
             <p class="muted">${escapeHtml(item.note || "Додайте примітку, адресу, квитки або бронювання в таймлайні.")}</p>
             <div class="actions">
-              <button class="btn" type="button" onclick="activateScreen('timeline')">Відкрити таймлайн</button>
-              <button class="btn secondary" type="button" onclick="openPointForm()">Додати точку</button>
+              ${renderMapActions(item)}
+              <button class="btn ghost" type="button" onclick="openTicketsForRoutePoint('${item.id}')">Квитки</button>
+              <button class="btn ghost" type="button" onclick="openDiaryForm()">Запис у щоденник</button>
+              <button class="btn secondary" type="button" onclick="openTimelineForRoutePoint('${item.id}')">У таймлайн</button>
+            </div>
+          </div>
+          <div class="card">
+            <h3>Не забути</h3>
+            <div class="actions">
+              <button class="btn ghost" type="button" onclick="activateScreen('bookings')">Перевірити PDF / QR</button>
+              <button class="btn ghost" type="button" onclick="activateScreen('shared')">Спільні речі</button>
+              <button class="btn ghost" type="button" onclick="activateScreen('med')">Аптечка</button>
             </div>
           </div>
         </section>
@@ -1552,6 +1596,36 @@
       `;
     }
 
+    function renderMore() {
+      const items = [
+        ["serhii", "Сергій", "Особистий чек-лист"],
+        ["oksana", "Оксана", "Особистий чек-лист"],
+        ["vitaha", "Вітаха", "Особистий чек-лист"],
+        ["shared", "Спільні речі", "Документи, речі, підготовка"],
+        ["med", "Аптечка", "Ліки, пластирі, SPF"],
+        ["planb", "План Б", "Транспорт і скорочення"],
+        ["budget", "Бюджет", "Витрати і підсумок"],
+        ["notes", "Нотатки", "Адреси, телефони, ідеї"],
+        ["sync", "☁️ Синхр.", "Supabase, backup, JSON"]
+      ];
+      return `
+        <section class="screen" id="screen-more">
+          <div class="card">
+            <h2>Ще</h2>
+            <p class="muted">Усе, що не потрібно щохвилини, але важливо мати під рукою.</p>
+          </div>
+          <div class="more-grid">
+            ${items.map(([id, title, text]) => `
+              <button class="more-tile" type="button" onclick="activateScreen('${id}')">
+                <strong>${escapeHtml(title)}</strong>
+                <span>${escapeHtml(text)}</span>
+              </button>
+            `).join("")}
+          </div>
+        </section>
+      `;
+    }
+
     function diaryCard(entry) {
       const point = getRoutePoints().find(item => item.id === entry.routePointId);
       const title = entry.title || (point ? routeGeneratedTitle(point) : "Запис щоденника");
@@ -1680,7 +1754,7 @@
     function init() {
       getRoutePoints();
       screenRoot.innerHTML = screens.map(s => s.render()).join("");
-      navRoot.innerHTML = screens.map((s, i) => `<button class="nav-btn ${i === 0 ? "active" : ""}" type="button" data-target="${s.id}"><span class="icon">${s.icon}</span><span>${s.label}</span></button>`).join("");
+      navRoot.innerHTML = navScreens.map((s, i) => `<button class="nav-btn ${i === 0 ? "active" : ""}" type="button" data-target="${s.id}"><span class="icon">${s.icon}</span><span>${s.label}</span></button>`).join("");
       document.querySelectorAll(".screen").forEach((screen, index) => screen.classList.toggle("active", index === 0));
       document.querySelectorAll(".nav-btn").forEach(button => button.addEventListener("click", () => activateScreen(button.dataset.target)));
       document.querySelectorAll(".checklist").forEach(initChecklist);
@@ -1699,6 +1773,7 @@
       const active = document.querySelector(".screen.active")?.id.replace("screen-", "") || "today";
       screenRoot.innerHTML = screens.map(s => s.render()).join("");
       document.querySelectorAll(".screen").forEach(screen => screen.classList.toggle("active", screen.id === `screen-${active}`));
+      syncNavActive(active);
       document.querySelectorAll(".checklist").forEach(initChecklist);
       initBudget();
       initNotes();
@@ -1709,11 +1784,20 @@
 
     function activateScreen(id, options = {}) {
       document.querySelectorAll(".screen").forEach(screen => screen.classList.toggle("active", screen.id === `screen-${id}`));
-      document.querySelectorAll(".nav-btn").forEach(button => button.classList.toggle("active", button.dataset.target === id));
-      document.querySelector(`.nav-btn[data-target="${id}"]`)?.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
+      syncNavActive(id);
       if (options.scrollTop !== false) window.scrollTo({ top: 0, behavior: "smooth" });
       renderAllAttachments();
       renderDiaryFiles();
+    }
+
+    function navTargetFor(screenId) {
+      return navScreens.some(item => item.id === screenId) ? screenId : "more";
+    }
+
+    function syncNavActive(screenId) {
+      const target = navTargetFor(screenId);
+      document.querySelectorAll(".nav-btn").forEach(button => button.classList.toggle("active", button.dataset.target === target));
+      document.querySelector(`.nav-btn[data-target="${target}"]`)?.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
     }
 
     function findRouteLinkedCard(attribute, routePointId) {
