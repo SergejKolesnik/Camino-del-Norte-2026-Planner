@@ -1,4 +1,4 @@
-const CACHE_NAME = "camino-del-norte-2026-v24-dark-ocean-theme";
+const CACHE_NAME = "camino-del-norte-2026-v25-new-app-icon";
 const APP_SHELL = [
   "./",
   "./index.html",
