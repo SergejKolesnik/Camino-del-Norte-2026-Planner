@@ -1024,7 +1024,7 @@
 
     function getTicketLikePoints(points, bookings) {
       const linkedPointIds = new Set(bookings.map(item => item.routePointId).filter(Boolean));
-      return points.filter(point => isTicketLikePoint(point) && !linkedPointIds.has(point.id));
+      return points.filter(point => (isTicketLikePoint(point) || ownerHasCloudFiles(point.id)) && !linkedPointIds.has(point.id));
     }
 
     function todayISO() {
@@ -1062,7 +1062,7 @@
     function getTimelineTicketPoints(bookings = getBookings()) {
       const linkedPointIds = new Set(bookings.map(item => item.routePointId).filter(Boolean));
       return getRoutePoints()
-        .filter(point => isTicketLikePoint(point))
+        .filter(point => isTicketLikePoint(point) || ownerHasCloudFiles(point.id))
         .filter(point => !isEmptyRouteTicketPoint(point))
         .filter(point => !linkedPointIds.has(point.id))
         .sort(sortPoints);
@@ -1074,6 +1074,18 @@
 
     function ownerHasCloudFiles(ownerId) {
       return getTicketFiles().some(file => file.ticketId === ownerId);
+    }
+
+    function analyzeTicketFileLinks(files, routePoints, bookings) {
+      const routeIds = new Set(routePoints.map(point => String(point.id)));
+      const bookingIds = new Set(bookings.map(item => String(item.id)));
+      return files.reduce((summary, file) => {
+        const ownerId = String(file.ticketId || file.ticket_id || "");
+        if (routeIds.has(ownerId)) summary.route += 1;
+        else if (bookingIds.has(ownerId)) summary.booking += 1;
+        else summary.missing += 1;
+        return summary;
+      }, { route: 0, booking: 0, missing: 0 });
     }
 
     function isEmptyBooking(item) {
@@ -2989,6 +3001,7 @@
         const ticketMerge = mergeCloudRows(ticketBase, remappedTickets.rows, rowToTicket);
         const fileMerge = mergeCloudRows(fileBase, remappedTicketFiles.rows, rowToTicketFile);
         const expenseMerge = mergeCloudRows(expenseBase, expenses, rowToExpense);
+        const fileLinks = analyzeTicketFileLinks(fileMerge.items, sortedRoutes, ticketMerge.items);
         localStorage.setItem(ROUTE_KEY, JSON.stringify(sortedRoutes));
         localStorage.setItem(BOOKINGS_KEY, JSON.stringify(ticketMerge.items));
         saveTicketFiles(await hydrateAndCacheTicketFiles(client, fileMerge.items), { markDirty: false });
@@ -3020,6 +3033,7 @@
           <div class="soft small">tickets: ${tickets.length} (${ticketMerge.added} added, ${ticketMerge.updated} updated)</div>
           <div class="soft small">ticket_files: ${ticketFiles.length} (${fileMerge.added} added, ${fileMerge.updated} updated)</div>
           <div class="soft small">remapped tickets: ${remappedTickets.remapped}, remapped ticket_files: ${remappedTicketFiles.remapped}</div>
+          <div class="soft small">file links: route_points ${fileLinks.route}, bookings ${fileLinks.booking}, missing ${fileLinks.missing}</div>
           <div class="soft small">checklists: ${checklistsRows.length}, notes: ${notesResult.data ? 1 : 0}, expenses: ${expenses.length}</div>
         `;
         refresh();
