@@ -1,4 +1,4 @@
-const CACHE_NAME = "camino-del-norte-2026-v16-google-maps-links";
+const CACHE_NAME = "camino-del-norte-2026-v20-google-maps-links";
 const APP_SHELL = [
   "./",
   "./index.html",

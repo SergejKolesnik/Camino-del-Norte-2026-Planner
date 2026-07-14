@@ -45,3 +45,9 @@ Use `supabase-route-point-integrity.sql`:
 2. Review manual-review candidates.
 3. Run the transaction.
 4. Run app Download/Sync repeatedly and confirm cloud count stays stable.
+
+Safety checks added before running this migration:
+
+- test-looking route points are protected when they are selected as canonical records for duplicate cleanup;
+- duplicate route points are not deleted if `tickets.related_point_id` or `ticket_files.ticket_id` still points to them after relink;
+- `PREVIEW 1` is only a candidate overview; the `DRY RUN` output is the exact automatic cleanup preview.
