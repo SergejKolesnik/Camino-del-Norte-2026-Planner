@@ -803,6 +803,7 @@
     function saveTicketFiles(files, options = {}) {
       localStorage.setItem(TICKET_FILES_KEY, JSON.stringify(files));
       if (options.markDirty !== false) {
+        touchMany("ticket_files", files.map(item => String(item.id)).filter(Boolean));
         setSyncStatus("Є локальні зміни");
         scheduleAutosync();
       }
@@ -2262,6 +2263,11 @@
       try {
         const deletedAt = nowISO();
         saveTicketFiles(files.map(item => String(item.id) === String(id) ? { ...item, deletedAt, updatedAt: deletedAt } : item));
+        setLocalUpdated("ticket_files", id, deletedAt);
+        const setup = getOptionalSupabaseClient();
+        if (setup && navigator.onLine) {
+          await syncDeletedTicketFilesToCloud(setup.client, setup.tripCode, { ids: [id] });
+        }
         setSyncStatus("Є локальні зміни");
         addSyncLog("видалено файл", file.filename);
       } catch (error) {
@@ -2915,6 +2921,9 @@
 
     function ticketFileToRow(item, tripCode) {
       const deleted_at = item.deletedAt || item.deleted_at || null;
+      const localUpdated = getLocalUpdated("ticket_files", item.id);
+      const updated_at = localUpdated === "1970-01-01T00:00:00.000Z" ? (item.updatedAt || item.updated_at || deleted_at || nowISO()) : localUpdated;
+      setLocalUpdated("ticket_files", item.id, updated_at);
       return {
         id: item.id,
         trip_code: normalizeTripCode(tripCode),
@@ -2925,11 +2934,12 @@
         size_bytes: Number(item.sizeBytes || item.size_bytes || 0),
         created_at: item.createdAt || item.created_at || nowISO(),
         deleted_at,
-        updated_at: item.updatedAt || item.updated_at || nowISO()
+        updated_at
       };
     }
 
-    function rowToTicketFile(row) {
+    function rowToTicketFile(row, options = {}) {
+      if (options.markUpdated !== false) setLocalUpdated("ticket_files", row.id, row.updated_at || nowISO());
       return {
         id: row.id,
         tripCode: row.trip_code || "",
@@ -2947,6 +2957,10 @@
     async function hydrateSignedTicketFiles(client, files) {
       const hydrated = [];
       for (const file of files) {
+        if (isSoftDeleted(file)) {
+          hydrated.push(file);
+          continue;
+        }
         if (!file.storagePath) {
           hydrated.push(file);
           continue;
@@ -2960,7 +2974,7 @@
     async function hydrateAndCacheTicketFiles(client, files) {
       const hydrated = await hydrateSignedTicketFiles(client, files);
       for (const file of hydrated) {
-        if (file.signedUrl) await cacheCloudFile(file);
+        if (!isSoftDeleted(file) && file.signedUrl) await cacheCloudFile(file);
       }
       return hydrated;
     }
@@ -3097,12 +3111,34 @@
       return uploadedCount;
     }
 
+    async function syncDeletedTicketFilesToCloud(client, tripCode, options = {}) {
+      const wantedIds = new Set((options.ids || []).map(String));
+      const deletedFiles = getAllTicketFiles().filter(file =>
+        isSoftDeleted(file) &&
+        file.storagePath &&
+        (!wantedIds.size || wantedIds.has(String(file.id)))
+      );
+      if (!deletedFiles.length) return 0;
+      const rows = deletedFiles.map(file => ticketFileToRow(file, tripCode));
+      await cloudUpsert(client, "ticket_files", rows, "id");
+      const paths = [...new Set(deletedFiles.map(file => file.storagePath).filter(Boolean))];
+      if (paths.length) {
+        const { error } = await client.storage.from("camino-files").remove(paths);
+        if (error) {
+          addSyncLog("помилка Storage delete", error.message);
+        }
+      }
+      addSyncLog("видалено файли зі Storage", `${paths.length}`);
+      return paths.length;
+    }
+
     async function uploadLocalToCloud() {
       try {
         setSyncStatus("Синхронізація…");
         const { client, tripCode } = getSupabaseClient();
         await upsertTrip(client, tripCode);
         await syncDeletedRoutePointsToCloud(client, tripCode);
+        await syncDeletedTicketFilesToCloud(client, tripCode);
         const storageUploaded = await uploadLocalFilesToCloud(client, tripCode);
         const routeDedupe = dedupeRoutePoints({ points: getRoutePoints(), preview: true, applyReferenceMap: true });
         const sortedRoutes = sortTimelineEvents(routeDedupe.items);
@@ -3133,6 +3169,7 @@
         setSyncStatus("Синхронізація…");
         const { client, tripCode } = getSupabaseClient();
         await syncDeletedRoutePointsToCloud(client, tripCode);
+        await syncDeletedTicketFilesToCloud(client, tripCode);
         const [cloudRoutesRaw, tickets, ticketFiles, expenses] = await Promise.all([
           cloudSelect(client, "route_points", tripCode),
           cloudSelect(client, "tickets", tripCode),
@@ -3234,6 +3271,7 @@
         const { client, tripCode } = getSupabaseClient();
         await upsertTrip(client, tripCode);
         await syncDeletedRoutePointsToCloud(client, tripCode);
+        await syncDeletedTicketFilesToCloud(client, tripCode);
         const [cloudRoutesRaw, tickets, ticketFiles, expenses, checklistsRows, notesResult] = await Promise.all([
           cloudSelect(client, "route_points", tripCode),
           cloudSelect(client, "tickets", tripCode),
@@ -3316,6 +3354,7 @@
         const { client, tripCode } = getSupabaseClient();
         await upsertTrip(client, tripCode);
         await syncDeletedRoutePointsToCloud(client, tripCode);
+        await syncDeletedTicketFilesToCloud(client, tripCode);
         const storageUploaded = await uploadLocalFilesToCloud(client, tripCode);
 
         const [cloudRoutesRaw, cloudTickets, cloudTicketFiles] = await Promise.all([
@@ -3344,7 +3383,7 @@
 
         const localTicketFiles = getTicketFiles({ includeDeleted: true });
         const localFileMap = new Map(localTicketFiles.map(file => [String(file.id), file]));
-        const cloudFileMap = new Map(remappedCloudTicketFiles.rows.map(file => [String(file.id), rowToTicketFile(file)]));
+        const cloudFileMap = new Map(remappedCloudTicketFiles.rows.map(file => [String(file.id), rowToTicketFile(file, { markUpdated: false })]));
         const mergedFiles = [...localTicketFiles];
         cloudFileMap.forEach((file, id) => {
           const localFile = localFileMap.get(id);
@@ -3369,7 +3408,9 @@
           : [];
         await cloudUpsert(client, "ticket_files", [...localFileRows, ...remappedCloudFileRows]);
         if (remappedCloudFileRows.length) addSyncLog("uploaded remapped ticket_files", `${remappedCloudFileRows.length}`);
-        saveTicketFiles(await hydrateAndCacheTicketFiles(client, mergedFiles), { markDirty: false });
+        const hydratedFiles = await hydrateAndCacheTicketFiles(client, mergedFiles);
+        saveTicketFiles(hydratedFiles, { markDirty: false });
+        hydratedFiles.forEach(file => setLocalUpdated("ticket_files", file.id, file.updatedAt || nowISO()));
         addSyncLog("uploaded ticket_files", `${localFileRows.length}`);
         addSyncLog("downloaded ticket_files", `${cloudTicketFiles.length}`);
         addSyncLog("storage uploaded files", `${storageUploaded}`);
