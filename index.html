@@ -273,6 +273,12 @@
       font-weight: 900;
       font-size: 12px;
     }
+    .media-player {
+      display: block;
+      width: 100%;
+      max-width: 320px;
+      margin: 8px 0 4px;
+    }
 
     .modal {
       position: fixed;
@@ -487,6 +493,9 @@
     let isSyncing = false;
     let pendingSync = false;
     let periodicSyncTimer = null;
+    let diaryRecorder = null;
+    let diaryRecordingChunks = [];
+    let diaryRecordingStartedAt = 0;
     const EXPORT_VERSION = 2;
     const types = ["поїзд", "літак", "автобус", "пором", "трансфер", "бронювання", "квиток", "авто", "пішки", "готель", "інше", "train", "flight", "bus", "ferry", "hotel", "booking", "ticket", "transfer"];
     const statuses = ["заплановано", "куплено", "підтверджено", "виконано"];
@@ -1647,7 +1656,7 @@
           <div class="attachments" data-diary-files="${entry.id}"></div>
           <div class="actions">
             <button class="btn ghost" type="button" onclick="openDiaryForm('${entry.id}')">Редагувати</button>
-            <button class="btn ghost" type="button" onclick="openDiaryFileForm('${entry.id}')">Додати фото</button>
+            <button class="btn ghost" type="button" onclick="openDiaryFileForm('${entry.id}')">Додати фото / голос</button>
             ${point ? `<button class="btn ghost" type="button" onclick="openTimelineForRoutePoint('${point.id}')">Відкрити маршрут</button>` : ""}
             <button class="btn danger" type="button" onclick="deleteDiaryEntry('${entry.id}')">Видалити</button>
           </div>
@@ -2027,7 +2036,14 @@
 
     function val(id) { return document.getElementById(id)?.value.trim() || ""; }
     function openModal() { modal.classList.add("active"); }
-    function closeModal() { modal.classList.remove("active"); modalContent.innerHTML = ""; }
+    function closeModal() {
+      if (diaryRecorder?.state === "recording") stopDiaryVoiceRecording();
+      diaryRecorder = null;
+      diaryRecordingChunks = [];
+      diaryRecordingStartedAt = 0;
+      modal.classList.remove("active");
+      modalContent.innerHTML = "";
+    }
     modal.addEventListener("click", event => { if (event.target === modal) closeModal(); });
 
     function openRouteFileForm(ownerId) { openFileForm("routeAttachments", ownerId, true); }
@@ -2107,12 +2123,23 @@
 
     function openDiaryFileModal(ownerId) {
       modalContent.innerHTML = `
-        <h2>Додати фото до щоденника</h2>
+        <h2>Додати фото / голос до щоденника</h2>
         <div class="form-grid">
-          <div class="field"><label for="diaryFileCaption">Підпис</label><input id="diaryFileCaption" type="text" placeholder="Короткий підпис до фото"></div>
-          <div class="field"><label for="diaryFileInput">Фото</label><input id="diaryFileInput" type="file" accept="image/*"></div>
+          <div class="field"><label for="diaryFileCaption">Підпис</label><input id="diaryFileCaption" type="text" placeholder="Короткий підпис до фото або голосу"></div>
+          <div class="field"><label for="diaryFileInput">Фото або аудіо</label><input id="diaryFileInput" type="file" accept="image/*,audio/*" capture="environment"></div>
         </div>
-        <div class="actions"><button class="btn" type="button" onclick="saveDiaryFile('${ownerId}')">Зберегти фото</button><button class="btn secondary" type="button" onclick="closeModal()">Скасувати</button></div>
+        <div class="soft small">На телефоні кнопка вибору файлу може одразу відкрити камеру. Голос можна записати нижче, якщо браузер дозволяє доступ до мікрофона.</div>
+        <div class="card">
+          <h3>Голосова нотатка</h3>
+          <p id="diaryRecordingStatus" class="muted">Запис ще не почато.</p>
+          <audio id="diaryRecordingPreview" controls hidden></audio>
+          <div class="actions">
+            <button class="btn ghost" type="button" onclick="startDiaryVoiceRecording()">Почати запис</button>
+            <button class="btn secondary" type="button" onclick="stopDiaryVoiceRecording()">Зупинити</button>
+            <button class="btn" type="button" onclick="saveDiaryVoiceRecording('${ownerId}')">Зберегти голос</button>
+          </div>
+        </div>
+        <div class="actions"><button class="btn" type="button" onclick="saveDiaryFile('${ownerId}')">Зберегти файл</button><button class="btn secondary" type="button" onclick="closeModal()">Скасувати</button></div>
       `;
       openModal();
     }
@@ -2246,11 +2273,94 @@
       renderAllAttachments();
     }
 
+    function isDiaryImage(file) {
+      return String(file?.mimeType || file?.type || "").startsWith("image/");
+    }
+
+    function isDiaryAudio(file) {
+      return String(file?.mimeType || file?.type || "").startsWith("audio/");
+    }
+
+    function diaryMediaKind(file) {
+      if (isDiaryAudio(file)) return "голос";
+      if (isDiaryImage(file)) return "фото";
+      return "файл";
+    }
+
+    function supportedAudioMimeType() {
+      const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/mpeg"];
+      return candidates.find(type => window.MediaRecorder && MediaRecorder.isTypeSupported(type)) || "";
+    }
+
+    async function startDiaryVoiceRecording() {
+      if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+        alert("Цей браузер не підтримує запис голосу. Можна додати готовий аудіофайл через вибір файлу.");
+        return;
+      }
+      if (diaryRecorder?.state === "recording") return;
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        diaryRecordingChunks = [];
+        diaryRecordingStartedAt = Date.now();
+        const mimeType = supportedAudioMimeType();
+        diaryRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+        diaryRecorder.ondataavailable = event => {
+          if (event.data?.size) diaryRecordingChunks.push(event.data);
+        };
+        diaryRecorder.onstop = () => {
+          stream.getTracks().forEach(track => track.stop());
+          const status = document.getElementById("diaryRecordingStatus");
+          const preview = document.getElementById("diaryRecordingPreview");
+          if (diaryRecordingChunks.length) {
+            const blob = new Blob(diaryRecordingChunks, { type: diaryRecorder.mimeType || mimeType || "audio/webm" });
+            preview.src = URL.createObjectURL(blob);
+            preview.hidden = false;
+            if (status) status.textContent = `Запис готовий: ${Math.max(1, Math.round((Date.now() - diaryRecordingStartedAt) / 1000))} с`;
+          } else if (status) {
+            status.textContent = "Запис порожній. Спробуйте ще раз.";
+          }
+        };
+        diaryRecorder.start();
+        const status = document.getElementById("diaryRecordingStatus");
+        if (status) status.textContent = "Йде запис голосу...";
+      } catch (error) {
+        alert(`Не вдалося отримати доступ до мікрофона. ${error.message}`);
+      }
+    }
+
+    function stopDiaryVoiceRecording() {
+      if (diaryRecorder?.state !== "recording") return Promise.resolve();
+      const recorder = diaryRecorder;
+      return new Promise(resolve => {
+        recorder.addEventListener("stop", resolve, { once: true });
+        recorder.stop();
+      });
+    }
+
+    async function saveDiaryVoiceRecording(entryId) {
+      if (diaryRecorder?.state === "recording") {
+        await stopDiaryVoiceRecording();
+      }
+      if (!diaryRecordingChunks.length) {
+        alert("Спочатку запишіть голосову нотатку.");
+        return;
+      }
+      const mimeType = diaryRecorder?.mimeType || supportedAudioMimeType() || "audio/webm";
+      const ext = mimeType.includes("mp4") ? "m4a" : mimeType.includes("mpeg") ? "mp3" : "webm";
+      const filename = `voice-${new Date().toISOString().replace(/[:.]/g, "-")}.${ext}`;
+      const file = new File(diaryRecordingChunks, filename, { type: mimeType, lastModified: Date.now() });
+      await saveDiaryMedia(entryId, file);
+    }
+
     async function saveDiaryFile(entryId) {
       const input = document.getElementById("diaryFileInput");
       const file = input.files?.[0];
-      if (!file) { alert("Оберіть фото."); return; }
-      if (!String(file.type || "").startsWith("image/")) { alert("Для щоденника поки підтримуються тільки фото."); return; }
+      if (!file) { alert("Оберіть фото або аудіо."); return; }
+      if (!isDiaryImage(file) && !isDiaryAudio(file)) { alert("Для щоденника підтримуються фото та аудіо."); return; }
+      await saveDiaryMedia(entryId, file);
+    }
+
+    async function saveDiaryMedia(entryId, file) {
       const caption = val("diaryFileCaption");
       const id = generateId();
       const existingLocal = (await dbAll("diaryFiles")).find(item =>
@@ -2262,7 +2372,7 @@
       if (existingLocal) {
         closeModal();
         await renderDiaryFiles();
-        addSyncLog("фото вже існує", file.name);
+        addSyncLog(`${diaryMediaKind(file)} вже існує`, file.name);
         return;
       }
       const uploaded = await trySaveDiaryFileToSupabase(entryId, file, { id, caption });
@@ -2280,8 +2390,8 @@
       if (uploaded) {
         setSyncStatus(syncedNowLabel());
       } else {
-        setSyncStatus("Фото збережено локально. Для синхронізації підключіть Supabase.");
-        addSyncLog("локальне фото щоденника", file.name);
+        setSyncStatus("Медіа щоденника збережено локально. Для синхронізації підключіть Supabase.");
+        addSyncLog(`локальне ${diaryMediaKind(file)} щоденника`, file.name);
       }
       closeModal();
       await renderDiaryFiles();
@@ -2391,14 +2501,18 @@
     }
 
     function diaryCloudFileView(file) {
-      const preview = file.signedUrl
+      const preview = isDiaryImage(file) && file.signedUrl
         ? `<img class="thumb" src="${escapeHtml(file.signedUrl)}" alt="${escapeHtml(file.caption || file.filename)}">`
-        : `<div class="thumb">IMG</div>`;
+        : `<div class="thumb">${isDiaryAudio(file) ? "AUDIO" : "FILE"}</div>`;
+      const player = isDiaryAudio(file) && file.signedUrl
+        ? `<audio class="media-player" controls src="${escapeHtml(file.signedUrl)}"></audio>`
+        : "";
       return `
         <div class="attachment">
           ${preview}
           <div>
             <strong>${escapeHtml(file.caption || file.filename)}</strong>
+            ${player}
             <div class="small muted">Supabase Storage · ${escapeHtml(file.filename)} · ${Number(file.sizeBytes || 0)} bytes</div>
             <div class="actions">
               <button class="btn ghost" type="button" onclick="openDiaryCloudFile('${file.id}')">Відкрити</button>
@@ -2412,11 +2526,18 @@
 
     function diaryLocalFileView(file) {
       const url = URL.createObjectURL(file.blob);
+      const preview = isDiaryImage(file)
+        ? `<img class="thumb" src="${url}" alt="${escapeHtml(file.caption || file.filename)}">`
+        : `<div class="thumb">${isDiaryAudio(file) ? "AUDIO" : "FILE"}</div>`;
+      const player = isDiaryAudio(file)
+        ? `<audio class="media-player" controls src="${url}"></audio>`
+        : "";
       return `
         <div class="attachment">
-          <img class="thumb" src="${url}" alt="${escapeHtml(file.caption || file.filename)}">
+          ${preview}
           <div>
             <strong>${escapeHtml(file.caption || file.filename)}</strong>
+            ${player}
             <div class="small muted">Локально · ${escapeHtml(file.mimeType)} · ${new Date(file.createdAt).toLocaleDateString("uk-UA")}</div>
             <div class="actions">
               <a class="btn ghost" href="${url}" target="_blank" rel="noopener">Відкрити</a>
@@ -2790,7 +2911,7 @@
     }
 
     async function deleteDiaryCloudFile(id, options = {}) {
-      if (!options.skipConfirm && !confirm("Видалити фото щоденника зі Storage?")) return;
+      if (!options.skipConfirm && !confirm("Видалити медіа щоденника зі Storage?")) return;
       const files = getAllDiaryFiles();
       const file = files.find(item => item.id === id);
       if (!file) return;

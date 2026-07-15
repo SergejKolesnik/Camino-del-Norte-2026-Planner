@@ -205,7 +205,7 @@ create table if not exists public.diary_files (
   trip_code text not null references public.trips(code) on delete cascade,
   entry_id text not null,
   filename text not null,
-  mime_type text not null default 'image/jpeg',
+  mime_type text not null default 'application/octet-stream',
   storage_path text not null,
   caption text,
   size_bytes bigint not null default 0,
@@ -369,7 +369,7 @@ values (
   'camino-files',
   false,
   20971520,
-  array['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf']
+  array['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'audio/webm', 'audio/mp4', 'audio/mpeg', 'application/pdf']
 )
 on conflict (id) do update set
   public = excluded.public,
@@ -423,7 +423,7 @@ using (bucket_id = 'camino-files');
 - квитки та бронювання;
 - файли квитків і бронювань через Supabase Storage bucket `camino-files` та таблицю `ticket_files`;
 - записи щоденника через таблицю `diary_entries`;
-- фото щоденника через Supabase Storage bucket `camino-files` та таблицю `diary_files`;
+- фото й голосові нотатки щоденника через Supabase Storage bucket `camino-files` та таблицю `diary_files`;
 - бюджет;
 - нотатки;
 - стани чек-листів.
@@ -432,7 +432,7 @@ using (bucket_id = 'camino-files');
 
 ## Файли та fallback
 
-Якщо Supabase підключений, скріншоти квитків, PDF, бронювання і фото щоденника завантажуються у Storage bucket `camino-files`. Metadata квиткових файлів зберігається в `ticket_files`, metadata фото щоденника - в `diary_files`.
+Якщо Supabase підключений, скріншоти квитків, PDF, бронювання, фото й голосові нотатки щоденника завантажуються у Storage bucket `camino-files`. Metadata квиткових файлів зберігається в `ticket_files`, metadata медіа щоденника - в `diary_files`.
 
 Якщо Supabase не підключений або недоступний, файл зберігається локально в IndexedDB і застосунок показує повідомлення на кшталт `Файл збережено локально. Для синхронізації підключіть Supabase.`
 
@@ -446,15 +446,15 @@ using (bucket_id = 'camino-files');
 
 ## Щоденник подорожі
 
-Вкладка `Щоденник` дозволяє створювати записи з датою, прив'язкою до точки маршруту, настроєм, погодою, текстом і фото.
+Вкладка `Щоденник` дозволяє створювати записи з датою, прив'язкою до точки маршруту, настроєм, погодою, текстом, фото і голосовими поясненнями.
 
-Фото зберігаються так:
+Медіа щоденника зберігаються так:
 
 - з Supabase: `camino-files/camino-2026/diary/<entry_id>/...`;
 - без Supabase: локально в IndexedDB store `diaryFiles`;
-- JSON backup експортує тільки текстові записи щоденника, без фото.
+- JSON backup експортує тільки текстові записи щоденника, без фото й аудіо.
 
-Щоб фото щоденника були доступні на другому телефоні, виконайте SQL schema з таблицями `diary_entries` і `diary_files`, підключіть Supabase в PWA і натисніть `Sync`.
+Щоб фото й голосові нотатки щоденника були доступні на другому телефоні, виконайте SQL schema з таблицями `diary_entries` і `diary_files`, підключіть Supabase в PWA і натисніть `Sync`.
 
 Для вже налаштованої бази можна не запускати весь великий SQL повторно, а виконати тільки файл:
 
@@ -482,9 +482,9 @@ supabase-diary.sql
 Локальні дані:
 
 - маршрут, квитки, бюджет, нотатки, чек-листи, щоденник, sync config - `localStorage`;
-- локальні fallback-скріни, PDF, вкладення і фото щоденника - `IndexedDB`;
-- хмарні файли квитків і фото щоденника - Supabase Storage `camino-files`.
+- локальні fallback-скріни, PDF, вкладення, фото й голосові нотатки щоденника - `IndexedDB`;
+- хмарні файли квитків, фото й голосові нотатки щоденника - Supabase Storage `camino-files`.
 
 ## Експорт та імпорт
 
-У розділі `☁️ Синхр.` є блок `Backup JSON`: там можна експортувати або імпортувати JSON. Файли і фото не входять у JSON-експорт.
+У розділі `☁️ Синхр.` є блок `Backup JSON`: там можна експортувати або імпортувати JSON. Файли, фото й аудіо не входять у JSON-експорт.
