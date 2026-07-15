@@ -1,12 +1,11 @@
-const CACHE_NAME = "camino-del-norte-2026-v25-new-app-icon";
+const CACHE_NAME = "camino-del-norte-2026-v26-icon-cache-bust";
 const APP_SHELL = [
   "./",
   "./index.html",
   "./manifest.json",
   "./service-worker.js",
-  "./icon.svg",
-  "./icon-192.png",
-  "./icon-512.png"
+  "./camino-icon-192.png",
+  "./camino-icon-512.png"
 ];
 
 self.addEventListener("install", event => {
