@@ -836,6 +836,38 @@
       return deleted && typeof deleted === "object" && !Array.isArray(deleted) ? deleted : {};
     }
 
+    function deletedRouteDeletedAt(value) {
+      return typeof value === "string" ? value : (value?.deletedAt || nowISO());
+    }
+
+    function routeDeleteKey(point = {}) {
+      const date = cleanText(point.date || point.date_key);
+      const type = normalizedType(point.type);
+      const from = cleanText(point.from ?? point.from_place).toLowerCase();
+      const to = cleanText(point.to ?? point.to_place).toLowerCase();
+      const title = from || to ? "" : cleanText(point.title).toLowerCase();
+      if (!date || !type || (!from && !to && !title)) return "";
+      return [date, type, from, to, title].join("|");
+    }
+
+    function deletedRouteEntry(id, point = {}, deletedAt = nowISO()) {
+      return {
+        id: String(id),
+        deletedAt,
+        routeKey: routeDeleteKey(point)
+      };
+    }
+
+    function deletedRouteEntries() {
+      const deleted = getDeletedRoutePoints();
+      return Object.entries(deleted).map(([id, value]) => {
+        if (value && typeof value === "object" && !Array.isArray(value)) {
+          return { id: String(id), deletedAt: value.deletedAt || nowISO(), routeKey: value.routeKey || "" };
+        }
+        return { id: String(id), deletedAt: String(value || nowISO()), routeKey: "" };
+      });
+    }
+
     function getDeletedRoutePointIdSet() {
       return new Set(Object.keys(getDeletedRoutePoints()));
     }
@@ -848,17 +880,31 @@
       if (!id) return;
       const deletedAt = nowISO();
       const deleted = getDeletedRoutePoints();
-      deleted[String(id)] = deletedAt;
-      saveDeletedRoutePoints(deleted);
       const points = getRoutePoints({ includeDeleted: true });
       const index = points.findIndex(point => String(point.id) === String(id));
+      const target = index !== -1 ? points[index] : {};
+      const targetKey = routeDeleteKey(target);
+      deleted[String(id)] = deletedRouteEntry(id, target, deletedAt);
+      let changedPoints = false;
       if (index !== -1) {
         points[index] = { ...points[index], deletedAt, updatedAt: deletedAt };
-        localStorage.setItem(ROUTE_KEY, JSON.stringify(points));
         setLocalUpdated("route_points", id, deletedAt);
+        changedPoints = true;
       } else {
         touchSync("route_points", id);
       }
+      if (targetKey) {
+        points.forEach((point, pointIndex) => {
+          if (String(point.id) === String(id) || isSoftDeleted(point)) return;
+          if (routeDeleteKey(point) !== targetKey) return;
+          deleted[String(point.id)] = deletedRouteEntry(point.id, point, deletedAt);
+          points[pointIndex] = { ...point, deletedAt, updatedAt: deletedAt };
+          setLocalUpdated("route_points", point.id, deletedAt);
+          changedPoints = true;
+        });
+      }
+      saveDeletedRoutePoints(deleted);
+      if (changedPoints) localStorage.setItem(ROUTE_KEY, JSON.stringify(points));
       addSyncLog("route_point delete queued", id);
     }
 
@@ -1260,6 +1306,26 @@
       return { items, changed };
     }
 
+    function propagateDeletedRouteKeys(points = []) {
+      const deletedKeys = new Map();
+      points.forEach(point => {
+        if (!isSoftDeleted(point)) return;
+        const key = routeDeleteKey(point);
+        if (key) deletedKeys.set(key, point.deletedAt || point.deleted_at || nowISO());
+      });
+      if (!deletedKeys.size) return { items: points, changed: 0 };
+      let changed = 0;
+      const items = points.map(point => {
+        if (isSoftDeleted(point)) return point;
+        const deletedAt = deletedKeys.get(routeDeleteKey(point));
+        if (!deletedAt) return point;
+        changed += 1;
+        setLocalUpdated("route_points", point.id, deletedAt);
+        return { ...point, deletedAt, updatedAt: deletedAt };
+      });
+      return { items, changed };
+    }
+
     function remapRouteReferences(idMap) {
       if (!idMap.size) return;
       const bookings = getBookings();
@@ -1327,20 +1393,23 @@
         if (String(secondary.id) !== String(merged.id)) idMap.set(String(secondary.id), String(merged.id));
         removed += 1;
       });
-      const statusCleanup = normalizePurchasedRouteStatuses(deduped, options);
+      const deletedKeyCleanup = propagateDeletedRouteKeys(deduped);
+      if (deletedKeyCleanup.changed && options.log !== false) addSyncLog("deleted route keys propagated", `${deletedKeyCleanup.changed}`);
+      const statusCleanup = normalizePurchasedRouteStatuses(deletedKeyCleanup.items, options);
       if (statusCleanup.changed && options.log !== false) addSyncLog("route statuses updated", `${statusCleanup.changed}`);
       const plannedCleanup = softDeletePlannedTransportDuplicates(statusCleanup.items, options);
       plannedCleanup.idMap.forEach((value, key) => idMap.set(key, value));
       const finalItems = plannedCleanup.items;
       removed += plannedCleanup.removed;
-      if (!options.preview && removed > 0) {
+      const changed = removed > 0 || deletedKeyCleanup.changed > 0 || statusCleanup.changed > 0;
+      if (!options.preview && changed) {
         localStorage.setItem(ROUTE_KEY, JSON.stringify(finalItems));
         remapRouteReferences(idMap);
         if (options.markDirty) touchMany("route_points", finalItems.map(item => item.id));
       }
       if (options.preview && options.applyReferenceMap && idMap.size) remapRouteReferences(idMap);
       if (options.log !== false) addSyncLog("duplicates removed", `${removed}`);
-      if (options.refreshView && removed > 0) refresh();
+      if (options.refreshView && changed) refresh();
       return { items: finalItems, removed, idMap };
     }
 
@@ -3886,14 +3955,31 @@
     }
 
     async function syncDeletedRoutePointsToCloud(client, tripCode) {
-      const deleted = getDeletedRoutePoints();
-      const rows = Object.entries(deleted).map(([id, deletedAt]) => ({
-        id,
+      const entries = deletedRouteEntries();
+      if (!entries.length) return 0;
+      const rowById = new Map(entries.map(entry => [String(entry.id), {
+        id: entry.id,
         trip_code: normalizeTripCode(tripCode),
         sort_order: 0,
-        deleted_at: deletedAt || nowISO(),
-        updated_at: deletedAt || nowISO()
-      }));
+        deleted_at: entry.deletedAt || nowISO(),
+        updated_at: entry.deletedAt || nowISO()
+      }]));
+      const deleteKeys = new Set(entries.map(entry => entry.routeKey).filter(Boolean));
+      if (deleteKeys.size) {
+        try {
+          const cloudRows = await cloudSelect(client, "route_points", tripCode);
+          cloudRows.forEach(row => {
+            const key = routeDeleteKey(row);
+            if (!key || !deleteKeys.has(key) || row.deleted_at) return;
+            const existing = rowById.get(String(row.id));
+            const deletedAt = existing?.deleted_at || nowISO();
+            rowById.set(String(row.id), { ...row, deleted_at: deletedAt, updated_at: deletedAt });
+          });
+        } catch (error) {
+          addSyncLog("route delete match error", error.message);
+        }
+      }
+      const rows = [...rowById.values()];
       if (!rows.length) return 0;
       try {
         await cloudUpsert(client, "route_points", rows, "id");
