@@ -1,4 +1,4 @@
-const CACHE_NAME = "camino-del-norte-2026-v28-app-icon-install";
+const CACHE_NAME = "camino-del-norte-2026-v29-route-cleanup";
 const APP_SHELL = [
   "./",
   "./index.html",

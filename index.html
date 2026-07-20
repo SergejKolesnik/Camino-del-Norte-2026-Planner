@@ -771,8 +771,16 @@
       return Boolean(item.deletedAt || item.deleted_at);
     }
 
+    function isSyncTestRecord(item = {}) {
+      return /sync_test|SYNC_TEST/i.test([item.id, item.title, item.name, item.from, item.to, item.note, item.bookingNumber, item.booking_number, item.from_place, item.to_place].join(" "));
+    }
+
+    function isVisibleRecord(item = {}) {
+      return !isSoftDeleted(item) && !isSyncTestRecord(item);
+    }
+
     function activeRecords(items = []) {
-      return items.filter(item => !isSoftDeleted(item));
+      return items.filter(isVisibleRecord);
     }
 
     function getAllTicketFiles() {
@@ -1126,12 +1134,29 @@
         .reduce((score, key) => score + (String(point[key] || "").trim() ? 1 : 0), 0);
     }
 
+    function routeStatusRank(point = {}) {
+      const status = cleanText(point.status).toLowerCase();
+      if (status === "виконано") return 4;
+      if (status === "куплено" || status === "підтверджено") return 3;
+      if (status === "заплановано") return 1;
+      return status ? 2 : 0;
+    }
+
+    function routePrimaryScore(point = {}, options = {}) {
+      const meta = normalizeTimelineDateTime(point);
+      return routeFilledScore(point)
+        + (meta.hasTime ? 8 : 0)
+        + routeStatusRank(point) * 4
+        + routeLinkedFiles(point.id, options).length * 10
+        + routeLinkedTickets(point.id, options).length * 10;
+    }
+
     function routeUpdatedAt(point = {}) {
       return Date.parse(point.updatedAt || point.updated_at || getLocalUpdated("route_points", point.id) || "") || 0;
     }
 
-    function choosePrimaryRoute(a, b) {
-      const scoreDiff = routeFilledScore(b) - routeFilledScore(a);
+    function choosePrimaryRoute(a, b, options = {}) {
+      const scoreDiff = routePrimaryScore(b, options) - routePrimaryScore(a, options);
       if (scoreDiff > 0) return b;
       if (scoreDiff < 0) return a;
       return routeUpdatedAt(b) > routeUpdatedAt(a) ? b : a;
@@ -1170,6 +1195,71 @@
       return true;
     }
 
+    function isTransportRouteType(type = "") {
+      return ["flight", "train", "bus", "ferry", "transfer", "hotel", "booking", "ticket", "літак", "поїзд", "автобус", "пором", "трансфер", "готель", "бронювання", "квиток", "авто"].includes(normalizedType(type));
+    }
+
+    function routeTransportKey(point = {}) {
+      const type = normalizedType(point.type);
+      const from = cleanText(point.from).toLowerCase();
+      const to = cleanText(point.to).toLowerCase();
+      if (!type || !from || !to || !isTransportRouteType(type)) return "";
+      return [type, from, to].join("|");
+    }
+
+    function isNoTimePlannedTransportDuplicate(point = {}, options = {}) {
+      if (isSoftDeleted(point) || isSyncTestRecord(point)) return false;
+      const meta = normalizeTimelineDateTime(point);
+      const status = cleanText(point.status).toLowerCase();
+      if (meta.hasTime || status !== "заплановано" || !routeTransportKey(point)) return false;
+      if (routeLinkedFiles(point.id, options).length || routeLinkedTickets(point.id, options).length) return false;
+      return true;
+    }
+
+    function isPreferredTransportPoint(point = {}, options = {}) {
+      if (isSoftDeleted(point) || isSyncTestRecord(point) || !routeTransportKey(point)) return false;
+      const meta = normalizeTimelineDateTime(point);
+      return meta.hasTime || routeStatusRank(point) >= 3 || routeLinkedFiles(point.id, options).length || routeLinkedTickets(point.id, options).length;
+    }
+
+    function softDeletePlannedTransportDuplicates(points = [], options = {}) {
+      const preferredByKey = new Map();
+      points.forEach(point => {
+        if (!isPreferredTransportPoint(point, options)) return;
+        const key = routeTransportKey(point);
+        const current = preferredByKey.get(key);
+        if (!current || choosePrimaryRoute(current, point, options) === point) preferredByKey.set(key, point);
+      });
+      if (!preferredByKey.size) return { items: points, removed: 0, idMap: new Map() };
+      const deletedAt = nowISO();
+      const idMap = new Map();
+      let removed = 0;
+      const items = points.map(point => {
+        const preferred = preferredByKey.get(routeTransportKey(point));
+        if (!preferred || String(preferred.id) === String(point.id) || !isNoTimePlannedTransportDuplicate(point, options)) return point;
+        removed += 1;
+        idMap.set(String(point.id), String(preferred.id));
+        setLocalUpdated("route_points", point.id, deletedAt);
+        return { ...point, deletedAt, updatedAt: deletedAt };
+      });
+      return { items, removed, idMap };
+    }
+
+    function normalizePurchasedRouteStatuses(points = [], options = {}) {
+      let changed = 0;
+      const items = points.map(point => {
+        if (isSoftDeleted(point) || isSyncTestRecord(point) || !isTransportRouteType(point.type)) return point;
+        if (cleanText(point.status).toLowerCase() !== "заплановано") return point;
+        const hasDocuments = routeLinkedFiles(point.id, options).length || routeLinkedTickets(point.id, options).length;
+        if (!hasDocuments) return point;
+        changed += 1;
+        const updatedAt = nowISO();
+        setLocalUpdated("route_points", point.id, updatedAt);
+        return { ...point, status: "куплено", updatedAt };
+      });
+      return { items, changed };
+    }
+
     function remapRouteReferences(idMap) {
       if (!idMap.size) return;
       const bookings = getBookings();
@@ -1203,13 +1293,19 @@
       const idMap = new Map();
       const deduped = [];
       let removed = 0;
-      points.forEach(point => {
+      points.forEach(rawPoint => {
+        let point = rawPoint;
         const id = String(point?.id || "");
         if (!id) {
           deduped.push(point);
           return;
         }
-        const smartKey = isSoftDeleted(point) ? "" : smartRouteKey(point);
+        if (isSyncTestRecord(point) && !isSoftDeleted(point)) {
+          const deletedAt = nowISO();
+          point = { ...point, deletedAt, updatedAt: deletedAt };
+          setLocalUpdated("route_points", id, deletedAt);
+        }
+        const smartKey = isSoftDeleted(point) || isSyncTestRecord(point) ? "" : smartRouteKey(point);
         const semanticIndex = smartKey && bySmartKey.has(smartKey) ? bySmartKey.get(smartKey) : -1;
         const canMergeSemantic = semanticIndex !== -1 && canAutoMergeSemanticRoute(deduped[semanticIndex], point, options);
         const existingIndex = byId.has(id) ? byId.get(id) : (canMergeSemantic ? semanticIndex : -1);
@@ -1221,7 +1317,7 @@
           return;
         }
         const current = deduped[existingIndex];
-        const primary = choosePrimaryRoute(current, point);
+        const primary = choosePrimaryRoute(current, point, options);
         const secondary = primary === current ? point : current;
         const merged = mergeRouteDuplicate(primary, secondary);
         deduped[existingIndex] = merged;
@@ -1231,15 +1327,21 @@
         if (String(secondary.id) !== String(merged.id)) idMap.set(String(secondary.id), String(merged.id));
         removed += 1;
       });
+      const statusCleanup = normalizePurchasedRouteStatuses(deduped, options);
+      if (statusCleanup.changed && options.log !== false) addSyncLog("route statuses updated", `${statusCleanup.changed}`);
+      const plannedCleanup = softDeletePlannedTransportDuplicates(statusCleanup.items, options);
+      plannedCleanup.idMap.forEach((value, key) => idMap.set(key, value));
+      const finalItems = plannedCleanup.items;
+      removed += plannedCleanup.removed;
       if (!options.preview && removed > 0) {
-        localStorage.setItem(ROUTE_KEY, JSON.stringify(deduped));
+        localStorage.setItem(ROUTE_KEY, JSON.stringify(finalItems));
         remapRouteReferences(idMap);
-        if (options.markDirty) touchMany("route_points", deduped.map(item => item.id));
+        if (options.markDirty) touchMany("route_points", finalItems.map(item => item.id));
       }
       if (options.preview && options.applyReferenceMap && idMap.size) remapRouteReferences(idMap);
       if (options.log !== false) addSyncLog("duplicates removed", `${removed}`);
       if (options.refreshView && removed > 0) refresh();
-      return { items: deduped, removed, idMap };
+      return { items: finalItems, removed, idMap };
     }
 
     function getBookings(options = {}) {
@@ -3459,9 +3561,9 @@
         localStorage.setItem(SYNC_LAST_TRIP_KEY, tripCode);
         addSyncLog("test write route_point", routeId);
         addSyncLog("test write ticket", ticketId);
-        await client.from("tickets").delete().eq("id", ticketId).eq("trip_code", tripCode);
-        await client.from("route_points").delete().eq("id", routeId).eq("trip_code", tripCode);
-        addSyncLog("test records cleaned", "1 route_point, 1 ticket");
+        await cloudUpsert(client, "tickets", [rowWithSoftDelete(ticketCheck.data)]);
+        await cloudUpsert(client, "route_points", [rowWithSoftDelete(routeCheck.data)]);
+        addSyncLog("test records soft-deleted", "1 route_point, 1 ticket");
         setSyncDiagnostics(`<div class="soft small"><strong>Тест OK:</strong> ${escapeHtml(title)} записано, прочитано назад і видалено з route_points та tickets.</div>`);
         setSyncStatus("Supabase test OK");
       } catch (error) {
@@ -3736,6 +3838,24 @@
       if (error) throw error;
     }
 
+    function rowWithSoftDelete(row = {}) {
+      const deletedAt = nowISO();
+      return { ...row, deleted_at: deletedAt, updated_at: deletedAt };
+    }
+
+    async function cleanupCloudSyncTestRecords(client, tripCode) {
+      const [routes, tickets] = await Promise.all([
+        cloudSelect(client, "route_points", tripCode),
+        cloudSelect(client, "tickets", tripCode)
+      ]);
+      const testRoutes = routes.filter(row => !row.deleted_at && isSyncTestRecord(row));
+      const testTickets = tickets.filter(row => !row.deleted_at && isSyncTestRecord(row));
+      if (testRoutes.length) await cloudUpsert(client, "route_points", testRoutes.map(rowWithSoftDelete));
+      if (testTickets.length) await cloudUpsert(client, "tickets", testTickets.map(rowWithSoftDelete));
+      if (testRoutes.length || testTickets.length) addSyncLog("sync test records soft-deleted", `route_points ${testRoutes.length}, tickets ${testTickets.length}`);
+      return { routePoints: testRoutes.length, tickets: testTickets.length };
+    }
+
     function isMissingCloudTableError(error = {}) {
       return /relation .* does not exist|Could not find the table|schema cache|404/i.test(String(error.message || error.details || ""));
     }
@@ -3921,6 +4041,7 @@
         await syncDeletedRoutePointsToCloud(client, tripCode);
         await syncDeletedTicketFilesToCloud(client, tripCode);
         await syncDeletedDiaryFilesToCloud(client, tripCode);
+        await cleanupCloudSyncTestRecords(client, tripCode);
         const storageUploaded = await uploadLocalFilesToCloud(client, tripCode);
         const diaryStorageUploaded = await uploadLocalDiaryFilesToCloud(client, tripCode);
         const routeDedupe = dedupeRoutePoints({ points: getRoutePoints(), preview: true, applyReferenceMap: true });
@@ -3960,6 +4081,7 @@
         await syncDeletedRoutePointsToCloud(client, tripCode);
         await syncDeletedTicketFilesToCloud(client, tripCode);
         await syncDeletedDiaryFilesToCloud(client, tripCode);
+        await cleanupCloudSyncTestRecords(client, tripCode);
         const [cloudRoutesRaw, tickets, ticketFiles, expenses, diaryRows, diaryFiles] = await Promise.all([
           cloudSelect(client, "route_points", tripCode),
           cloudSelect(client, "tickets", tripCode),
@@ -4072,6 +4194,7 @@
         await syncDeletedRoutePointsToCloud(client, tripCode);
         await syncDeletedTicketFilesToCloud(client, tripCode);
         await syncDeletedDiaryFilesToCloud(client, tripCode);
+        await cleanupCloudSyncTestRecords(client, tripCode);
         const [cloudRoutesRaw, tickets, ticketFiles, expenses, checklistsRows, diaryRows, diaryFiles, notesResult] = await Promise.all([
           cloudSelect(client, "route_points", tripCode),
           cloudSelect(client, "tickets", tripCode),
@@ -4166,6 +4289,7 @@
         await syncDeletedRoutePointsToCloud(client, tripCode);
         await syncDeletedTicketFilesToCloud(client, tripCode);
         await syncDeletedDiaryFilesToCloud(client, tripCode);
+        await cleanupCloudSyncTestRecords(client, tripCode);
         const storageUploaded = await uploadLocalFilesToCloud(client, tripCode);
         const diaryStorageUploaded = await uploadLocalDiaryFilesToCloud(client, tripCode);
 
@@ -4185,7 +4309,7 @@
         const remappedCloudTicketFiles = remapRouteLinkedRows(cloudTicketFiles, routeDedupe.idMap, "ticket_id");
         const sortedRoutes = sortTimelineEvents(routeDedupe.items);
         localStorage.setItem(ROUTE_KEY, JSON.stringify(sortedRoutes));
-        const routeUpload = await upsertRoutePointsToSupabase(client, tripCode, routeResult.pushRows.map(rowToRoute));
+        const routeUpload = await upsertRoutePointsToSupabase(client, tripCode, sortedRoutes);
         addSyncLog("uploaded route_points", `${routeUpload.inserted + routeUpload.updated}`);
         addSyncLog("downloaded route_points", `${cloudRoutes.length}`);
 
