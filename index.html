@@ -167,6 +167,35 @@
       background: rgba(18, 38, 52, .90);
       box-shadow: var(--shadow);
     }
+    .trip-grid {
+      display: grid;
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .trip-card {
+      width: 100%;
+      text-align: left;
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 16px;
+      background: rgba(18, 38, 52, .90);
+      box-shadow: var(--shadow);
+    }
+    .trip-card.active {
+      border-color: rgba(239, 196, 124, .72);
+      box-shadow: 0 0 0 2px rgba(239, 196, 124, .12), var(--shadow);
+    }
+    .trip-card strong {
+      display: block;
+      font-size: 19px;
+    }
+    .trip-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 10px;
+    }
     .soft {
       padding: 12px;
       border: 1px solid var(--line);
@@ -450,8 +479,8 @@
     <header class="topbar">
       <div class="brand-row">
         <div>
-          <h1>Camino del Norte 2026</h1>
-          <p>Дніпро → Варшава → Більбао → Сантандер → Таріфа → додому</p>
+          <h1 id="appTitle">Camino del Norte 2026</h1>
+          <p id="appSubtitle">Дніпро → Варшава → Більбао → Сантандер → Таріфа → додому</p>
         </div>
         <button id="installBtn" class="install-btn" type="button">Встановити</button>
       </div>
@@ -473,21 +502,25 @@
   <input id="importFile" type="file" accept="application/json,.json" hidden>
 
   <script>
-    const ROUTE_KEY = "camino2026_route_points";
-    const BOOKINGS_KEY = "camino2026_booking_records";
-    const SYNC_CONFIG_KEY = "camino2026_supabase_config";
-    const SYNC_META_KEY = "camino2026_sync_meta";
-    const SYNC_STATUS_KEY = "camino2026_sync_status";
-    const SYNC_LOG_KEY = "camino2026_sync_log";
-    const SYNC_SETTINGS_KEY = "camino2026_sync_settings";
-    const SYNC_LAST_TRIP_KEY = "camino2026_last_synced_trip_code";
-    const TIMELINE_AUTO_SORT_KEY = "camino2026_timeline_auto_sort";
-    const TICKET_FILES_KEY = "camino2026_ticket_files";
-    const DIARY_KEY = "camino2026_diary_entries";
-    const DIARY_FILES_KEY = "camino2026_diary_files";
-    const DELETED_ROUTE_POINTS_KEY = "camino2026_deleted_route_points";
     const CANONICAL_TRIP_CODE = "camino-2026";
     const LEGACY_TRIP_CODES = new Set(["camino2026"]);
+    const ACTIVE_TRIP_KEY = "travelplanner_active_trip";
+    const TRIPS_KEY = "travelplanner_trips";
+    const PLANNER_MODE_KEY = "travelplanner_screen_mode";
+    const SYNC_CONFIG_KEY = "camino2026_supabase_config";
+    const SYNC_SETTINGS_KEY = "camino2026_sync_settings";
+    let activeTripCode = normalizeTripCode(localStorage.getItem(ACTIVE_TRIP_KEY) || CANONICAL_TRIP_CODE);
+    let ROUTE_KEY = "";
+    let BOOKINGS_KEY = "";
+    let SYNC_META_KEY = "";
+    let SYNC_STATUS_KEY = "";
+    let SYNC_LOG_KEY = "";
+    let SYNC_LAST_TRIP_KEY = "";
+    let TIMELINE_AUTO_SORT_KEY = "";
+    let TICKET_FILES_KEY = "";
+    let DIARY_KEY = "";
+    let DIARY_FILES_KEY = "";
+    let DELETED_ROUTE_POINTS_KEY = "";
     const AUTOSYNC_DELAY = 2500;
     let autosyncTimer = null;
     let isSyncing = false;
@@ -497,6 +530,20 @@
     let diaryRecordingChunks = [];
     let diaryRecordingStartedAt = 0;
     const EXPORT_VERSION = 2;
+    const CAMINO_TRIP = {
+      code: CANONICAL_TRIP_CODE,
+      title: "Camino del Norte 2026",
+      description: "Дніпро → Варшава → Більбао → Сантандер → Таріфа → додому",
+      trip_type: "camino",
+      start_date: "2026-07-25",
+      end_date: "2026-08-07",
+      countries: "Україна, Польща, Іспанія",
+      currency: "EUR",
+      timezone: "Europe/Kiev",
+      status: "active",
+      created_at: "2026-01-01T00:00:00.000Z",
+      updated_at: "2026-01-01T00:00:00.000Z"
+    };
     const types = ["поїзд", "літак", "автобус", "пором", "трансфер", "бронювання", "квиток", "авто", "пішки", "готель", "інше", "train", "flight", "bus", "ferry", "hotel", "booking", "ticket", "transfer"];
     const statuses = ["заплановано", "куплено", "підтверджено", "виконано"];
     const bookingTypes = ["квиток", "готель", "страховка", "інше"];
@@ -530,11 +577,11 @@
     });
 
     const checklists = {
-      serhii: { title: "Чек-лист Сергія", storage: "camino2026_serhii", items: ["Закордонний паспорт", "Банківська картка + трохи готівки", "Рюкзак 25-30 л", "Чохол від дощу на рюкзак", "Розношені трекінгові кросівки", "Легкі сандалі / друге взуття", "2 футболки для ходьби", "2 пари шортів", "Легкі штани", "Фліс / легка кофта", "Вітрівка або легкий дощовик", "Кепка / панама", "Баф", "3 пари трекінгових шкарпеток", "3 комплекти білизни", "Одяг для сну", "Плавки для Таріфи", "Телефон + зарядний пристрій", "Кабель USB", "Павербанк", "Навушники", "Сонцезахисні окуляри"] },
-      oksana: { title: "Чек-лист Оксани", storage: "camino2026_oksana", items: ["Закордонний паспорт", "Банківська картка + трохи готівки", "Рюкзак 25-30 л", "Чохол від дощу на рюкзак", "Розношені трекінгові кросівки", "Легкі сандалі / друге взуття", "2 футболки для ходьби", "2 пари шортів / легкий низ", "Легкі штани або легінси", "Фліс / легка кофта", "Вітрівка або легкий дощовик", "Кепка / панама", "Баф", "3 пари трекінгових шкарпеток", "3 комплекти білизни", "Одяг для сну", "Купальник для Таріфи", "Телефон + зарядний пристрій", "Кабель USB", "Павербанк за потреби", "Сонцезахисні окуляри", "Особиста косметика мінімум"] },
-      vitaha: { title: "Чек-лист Вітахи", storage: "camino2026_vitaha", items: ["Закордонний паспорт", "Банківська картка + трохи готівки", "Рюкзак 25-30 л", "Чохол від дощу на рюкзак", "Розношені трекінгові кросівки", "Легкі сандалі / друге взуття", "2 футболки для ходьби", "2 пари шортів", "Легкі штани", "Фліс / легка кофта", "Вітрівка або легкий дощовик", "Кепка / панама", "Баф", "3 пари трекінгових шкарпеток", "3 комплекти білизни", "Одяг для сну", "Плавки для Таріфи", "Телефон + зарядний пристрій", "Кабель USB", "Павербанк", "Навушники", "Сонцезахисні окуляри"] },
-      shared: { title: "Спільні речі", storage: "camino2026_shared", items: ["Медична страховка", "Квитки в телефоні", "Бронювання готелів", "Копії документів у телефоні", "Пляшка для води кожному 1-1,5 л", "Маленький рушник із мікрофібри", "SPF 50", "Гігієнічна помада", "Малий пральний засіб / капсули", "2-4 прищіпки", "Zip-lock пакети", "Пакет для брудного або мокрого одягу", "Горіхи / батончики на перший день", "Офлайн-карти", "Маршрути Camino в телефоні"] },
-      med: { title: "Аптечка", storage: "camino2026_med", items: ["Особисті ліки", "Гідроколоїдні пластирі від мозолів", "Звичайні пластирі", "Еластичний бинт", "Антисептик", "Знеболювальне", "Протизапальний гель", "Засіб від розладу шлунка", "Антигістамінний препарат", "Крем / вазелін від натирання", "Манікюрні ножиці", "Кусачки для нігтів"] }
+      serhii: { title: "Чек-лист Сергія", key: "serhii", storage: "camino2026_serhii", items: ["Закордонний паспорт", "Банківська картка + трохи готівки", "Рюкзак 25-30 л", "Чохол від дощу на рюкзак", "Розношені трекінгові кросівки", "Легкі сандалі / друге взуття", "2 футболки для ходьби", "2 пари шортів", "Легкі штани", "Фліс / легка кофта", "Вітрівка або легкий дощовик", "Кепка / панама", "Баф", "3 пари трекінгових шкарпеток", "3 комплекти білизни", "Одяг для сну", "Плавки для Таріфи", "Телефон + зарядний пристрій", "Кабель USB", "Павербанк", "Навушники", "Сонцезахисні окуляри"] },
+      oksana: { title: "Чек-лист Оксани", key: "oksana", storage: "camino2026_oksana", items: ["Закордонний паспорт", "Банківська картка + трохи готівки", "Рюкзак 25-30 л", "Чохол від дощу на рюкзак", "Розношені трекінгові кросівки", "Легкі сандалі / друге взуття", "2 футболки для ходьби", "2 пари шортів / легкий низ", "Легкі штани або легінси", "Фліс / легка кофта", "Вітрівка або легкий дощовик", "Кепка / панама", "Баф", "3 пари трекінгових шкарпеток", "3 комплекти білизни", "Одяг для сну", "Купальник для Таріфи", "Телефон + зарядний пристрій", "Кабель USB", "Павербанк за потреби", "Сонцезахисні окуляри", "Особиста косметика мінімум"] },
+      vitaha: { title: "Чек-лист Вітахи", key: "vitaha", storage: "camino2026_vitaha", items: ["Закордонний паспорт", "Банківська картка + трохи готівки", "Рюкзак 25-30 л", "Чохол від дощу на рюкзак", "Розношені трекінгові кросівки", "Легкі сандалі / друге взуття", "2 футболки для ходьби", "2 пари шортів", "Легкі штани", "Фліс / легка кофта", "Вітрівка або легкий дощовик", "Кепка / панама", "Баф", "3 пари трекінгових шкарпеток", "3 комплекти білизни", "Одяг для сну", "Плавки для Таріфи", "Телефон + зарядний пристрій", "Кабель USB", "Павербанк", "Навушники", "Сонцезахисні окуляри"] },
+      shared: { title: "Спільні речі", key: "shared", storage: "camino2026_shared", items: ["Медична страховка", "Квитки в телефоні", "Бронювання готелів", "Копії документів у телефоні", "Пляшка для води кожному 1-1,5 л", "Маленький рушник із мікрофібри", "SPF 50", "Гігієнічна помада", "Малий пральний засіб / капсули", "2-4 прищіпки", "Zip-lock пакети", "Пакет для брудного або мокрого одягу", "Горіхи / батончики на перший день", "Офлайн-карти", "Маршрути Camino в телефоні"] },
+      med: { title: "Аптечка", key: "med", storage: "camino2026_med", items: ["Особисті ліки", "Гідроколоїдні пластирі від мозолів", "Звичайні пластирі", "Еластичний бинт", "Антисептик", "Знеболювальне", "Протизапальний гель", "Засіб від розладу шлунка", "Антигістамінний препарат", "Крем / вазелін від натирання", "Манікюрні ножиці", "Кусачки для нігтів"] }
     };
 
     const screens = [
@@ -641,6 +688,218 @@
       try { return JSON.parse(localStorage.getItem(key) || "null") ?? fallback; } catch { return fallback; }
     }
 
+    function activeTrip() {
+      return getTrips().find(trip => trip.code === activeTripCode) || CAMINO_TRIP;
+    }
+
+    function tripStoragePrefix(code = activeTripCode) {
+      const normalized = normalizeTripCode(code);
+      return normalized === CANONICAL_TRIP_CODE ? "camino2026" : `travelplanner_${normalized}`;
+    }
+
+    function tripStorageKey(suffix, code = activeTripCode) {
+      return `${tripStoragePrefix(code)}_${suffix}`;
+    }
+
+    function updateTripScopedStorageKeys() {
+      ROUTE_KEY = tripStorageKey("route_points");
+      BOOKINGS_KEY = tripStorageKey("booking_records");
+      SYNC_META_KEY = tripStorageKey("sync_meta");
+      SYNC_STATUS_KEY = tripStorageKey("sync_status");
+      SYNC_LOG_KEY = tripStorageKey("sync_log");
+      SYNC_LAST_TRIP_KEY = tripStorageKey("last_synced_trip_code");
+      TIMELINE_AUTO_SORT_KEY = tripStorageKey("timeline_auto_sort");
+      TICKET_FILES_KEY = tripStorageKey("ticket_files");
+      DIARY_KEY = tripStorageKey("diary_entries");
+      DIARY_FILES_KEY = tripStorageKey("diary_files");
+      DELETED_ROUTE_POINTS_KEY = tripStorageKey("deleted_route_points");
+      Object.values(checklists).forEach(list => {
+        list.storage = tripStorageKey(list.key);
+      });
+    }
+
+    function normalizeTrip(raw = {}) {
+      const code = normalizeTripCode(raw.code || raw.trip_code || "");
+      const isCamino = code === CANONICAL_TRIP_CODE;
+      const createdAt = raw.created_at || raw.createdAt || nowISO();
+      const updatedAt = raw.updated_at || raw.updatedAt || createdAt;
+      return {
+        ...CAMINO_TRIP,
+        ...raw,
+        code: code || CANONICAL_TRIP_CODE,
+        title: cleanText(raw.title) || (isCamino ? CAMINO_TRIP.title : "Нова подорож"),
+        description: cleanText(raw.description) || (isCamino ? CAMINO_TRIP.description : ""),
+        trip_type: cleanText(raw.trip_type || raw.tripType) || (isCamino ? CAMINO_TRIP.trip_type : "other"),
+        start_date: cleanText(raw.start_date || raw.startDate) || (isCamino ? CAMINO_TRIP.start_date : ""),
+        end_date: cleanText(raw.end_date || raw.endDate) || (isCamino ? CAMINO_TRIP.end_date : ""),
+        countries: cleanText(raw.countries || raw.country) || (isCamino ? CAMINO_TRIP.countries : ""),
+        currency: cleanText(raw.currency) || (isCamino ? CAMINO_TRIP.currency : "EUR"),
+        timezone: cleanText(raw.timezone) || (isCamino ? CAMINO_TRIP.timezone : Intl.DateTimeFormat().resolvedOptions().timeZone || "Europe/Kiev"),
+        status: cleanText(raw.status) || "active",
+        created_at: createdAt,
+        updated_at: updatedAt
+      };
+    }
+
+    function getTrips() {
+      const saved = readJSON(TRIPS_KEY, []);
+      const byCode = new Map([[CANONICAL_TRIP_CODE, CAMINO_TRIP]]);
+      if (Array.isArray(saved)) {
+        saved.map(normalizeTrip).forEach(trip => byCode.set(trip.code, trip));
+      }
+      if (!byCode.has(activeTripCode)) activeTripCode = CANONICAL_TRIP_CODE;
+      const trips = [...byCode.values()].sort((a, b) => String(a.start_date || "9999").localeCompare(String(b.start_date || "9999")) || a.title.localeCompare(b.title));
+      localStorage.setItem(TRIPS_KEY, JSON.stringify(trips));
+      localStorage.setItem(ACTIVE_TRIP_KEY, activeTripCode);
+      return trips;
+    }
+
+    function saveTrip(trip) {
+      const normalized = normalizeTrip(trip);
+      const trips = getTrips().filter(item => item.code !== normalized.code);
+      trips.push({ ...normalized, updated_at: nowISO() });
+      localStorage.setItem(TRIPS_KEY, JSON.stringify(trips));
+      return normalized;
+    }
+
+    function setActiveTrip(code, options = {}) {
+      activeTripCode = normalizeTripCode(code || CANONICAL_TRIP_CODE);
+      localStorage.setItem(ACTIVE_TRIP_KEY, activeTripCode);
+      updateTripScopedStorageKeys();
+      if (options.showPlanner !== false) localStorage.setItem(PLANNER_MODE_KEY, "planner");
+      refreshPlannerShell(options.screen || "today");
+      if (options.autosync !== false) autosyncNow();
+    }
+
+    function showTripSelector() {
+      localStorage.setItem(PLANNER_MODE_KEY, "trips");
+      updateHeader();
+      setBottomNavVisible(false);
+      navRoot.innerHTML = "";
+      screenRoot.innerHTML = renderTripSelector();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+
+    function setBottomNavVisible(visible) {
+      const nav = document.querySelector(".bottom-nav");
+      if (nav) nav.style.display = visible ? "block" : "none";
+    }
+
+    function updateHeader() {
+      const trip = activeTrip();
+      const title = document.getElementById("appTitle");
+      const subtitle = document.getElementById("appSubtitle");
+      if (title) title.textContent = localStorage.getItem(PLANNER_MODE_KEY) === "trips" ? "Мої подорожі" : trip.title;
+      if (subtitle) subtitle.textContent = localStorage.getItem(PLANNER_MODE_KEY) === "trips" ? "Travel Planner" : (trip.description || `${trip.start_date || ""} ${trip.end_date ? "→ " + trip.end_date : ""}`.trim());
+    }
+
+    function renderTripSelector() {
+      const trips = getTrips();
+      const config = readJSON(SYNC_CONFIG_KEY, { url: "", anonKey: "" });
+      return `
+        <section class="screen active" id="screen-trips">
+          <div class="card">
+            <h2>Мої подорожі</h2>
+            <p class="muted">Кожна подорож має окремий маршрут, квитки, документи, бюджет, нотатки і чек-листи.</p>
+            <div class="actions">
+              <button class="btn" type="button" onclick="openTripForm()">+ Створити подорож</button>
+              ${config.url && config.anonKey ? `<button class="btn secondary" type="button" onclick="pullTripsFromSupabase()">Оновити з Supabase</button>` : ""}
+            </div>
+          </div>
+          <div class="trip-grid">
+            ${trips.map(trip => `
+              <button class="trip-card ${trip.code === activeTripCode ? "active" : ""}" type="button" onclick="setActiveTrip('${escapeHtml(trip.code)}')">
+                <strong>${escapeHtml(trip.title)}</strong>
+                <p class="muted">${escapeHtml(trip.description || "Без опису")}</p>
+                <div class="trip-meta">
+                  <span class="chip">${escapeHtml(trip.start_date || "без дати")}${trip.end_date ? ` → ${escapeHtml(trip.end_date)}` : ""}</span>
+                  <span class="chip">${escapeHtml(trip.countries || "країна не вказана")}</span>
+                  <span class="chip sun">${escapeHtml(trip.trip_type || "other")}</span>
+                  <span class="chip green">${escapeHtml(trip.status || "active")}</span>
+                </div>
+              </button>
+            `).join("")}
+          </div>
+        </section>
+      `;
+    }
+
+    async function pullTripsFromSupabase() {
+      try {
+        const config = readJSON(SYNC_CONFIG_KEY, { url: "", anonKey: "" });
+        if (!config.url || !config.anonKey) throw new Error("Спочатку підключіть Supabase у вкладці Синхр.");
+        if (!window.supabase || typeof window.supabase.createClient !== "function") throw new Error("Supabase CDN ще не завантажився.");
+        const client = window.supabase.createClient(config.url, config.anonKey);
+        const { data, error } = await client.from("trips").select("*");
+        if (error) throw error;
+        const existing = new Map(getTrips().map(trip => [trip.code, trip]));
+        (data || []).map(normalizeTrip).forEach(trip => existing.set(trip.code, { ...existing.get(trip.code), ...trip }));
+        localStorage.setItem(TRIPS_KEY, JSON.stringify([...existing.values()]));
+        showTripSelector();
+      } catch (error) {
+        alert(`Не вдалося оновити trips: ${error.message}`);
+      }
+    }
+
+    function openTripForm() {
+      modalContent.innerHTML = `
+        <h2>Нова подорож</h2>
+        <div class="form-grid">
+          <div class="field"><label for="tripTitle">Назва</label><input id="tripTitle" type="text" placeholder="Greece 2026"></div>
+          <div class="field"><label for="tripCode">Code</label><input id="tripCode" type="text" placeholder="greece-2026"></div>
+          <div class="field"><label for="tripType">Тип</label><select id="tripType">
+            <option value="vacation">Vacation / Відпочинок</option>
+            <option value="camino">Camino</option>
+            <option value="road-trip">Road Trip</option>
+            <option value="business">Business / Відрядження</option>
+            <option value="weekend">Weekend</option>
+            <option value="other">Other</option>
+          </select></div>
+          <div class="field"><label for="tripStart">Start date</label><input id="tripStart" type="date"></div>
+          <div class="field"><label for="tripEnd">End date</label><input id="tripEnd" type="date"></div>
+          <div class="field"><label for="tripCountry">Country</label><input id="tripCountry" type="text" placeholder="Greece"></div>
+          <div class="field"><label for="tripCurrency">Currency</label><input id="tripCurrency" type="text" value="EUR"></div>
+          <div class="field"><label for="tripTimezone">Timezone</label><input id="tripTimezone" type="text" value="${escapeHtml(Intl.DateTimeFormat().resolvedOptions().timeZone || "Europe/Kiev")}"></div>
+        </div>
+        <div class="actions">
+          <button class="btn" type="button" onclick="createTripFromForm()">Створити</button>
+          <button class="btn secondary" type="button" onclick="closeModal()">Скасувати</button>
+        </div>
+      `;
+      openModal();
+    }
+
+    function createTripFromForm() {
+      const code = normalizeTripCode(val("tripCode"));
+      const title = val("tripTitle");
+      if (!title || !code) {
+        alert("Додайте назву і code подорожі.");
+        return;
+      }
+      if (!/^[a-z0-9][a-z0-9-]*$/.test(code)) {
+        alert("Code краще писати малими латинськими літерами, цифрами і дефісами, наприклад greece-2026.");
+        return;
+      }
+      saveTrip({
+        code,
+        title,
+        description: val("tripCountry"),
+        trip_type: val("tripType"),
+        start_date: val("tripStart"),
+        end_date: val("tripEnd"),
+        countries: val("tripCountry"),
+        currency: val("tripCurrency") || "EUR",
+        timezone: val("tripTimezone") || "Europe/Kiev",
+        status: "planned",
+        created_at: nowISO(),
+        updated_at: nowISO()
+      });
+      closeModal();
+      setActiveTrip(code, { screen: "timeline", autosync: false });
+    }
+
+    updateTripScopedStorageKeys();
+
     function getChecklistState(list) {
       const saved = readJSON(list.storage, null);
       if (saved && Array.isArray(saved.items)) {
@@ -668,6 +927,11 @@
     function saveChecklistState(list, state, options = {}) {
       localStorage.setItem(list.storage, JSON.stringify({ version: 2, items: state.items }));
       if (options.markDirty !== false) touchSync("checklists", list.storage);
+    }
+
+    function checklistStorageFromCloudKey(listKey) {
+      const match = Object.values(checklists).find(list => list.storage === listKey || list.key === listKey || `camino2026_${list.key}` === listKey);
+      return match ? match.storage : listKey;
     }
 
     function nowISO() {
@@ -755,7 +1019,7 @@
 
     function getSyncConfig() {
       const config = readJSON(SYNC_CONFIG_KEY, { url: "", anonKey: "", tripCode: CANONICAL_TRIP_CODE });
-      return { ...config, tripCode: normalizeTripCode(config.tripCode || CANONICAL_TRIP_CODE) };
+      return { ...config, tripCode: activeTripCode };
     }
 
     function getSyncSettings() {
@@ -828,7 +1092,7 @@
     }
 
     function getAllExpenses() {
-      return readJSON("camino2026_expenses", []);
+      return readJSON(tripStorageKey("expenses"), []);
     }
 
     function getDeletedRoutePoints() {
@@ -993,6 +1257,10 @@
     function getStoredRoutePoints() {
       const saved = readJSON(ROUTE_KEY, null);
       if (Array.isArray(saved) && saved.length) return saved;
+      if (activeTripCode !== CANONICAL_TRIP_CODE) {
+        if (!Array.isArray(saved)) localStorage.setItem(ROUTE_KEY, JSON.stringify([]));
+        return [];
+      }
       localStorage.setItem(ROUTE_KEY, JSON.stringify(defaultRoutePoints));
       return defaultRoutePoints;
     }
@@ -1513,6 +1781,17 @@
 
     function renderToday() {
       const item = closestPoint();
+      if (!item) {
+        return `
+          <section class="screen active" id="screen-today">
+            <div class="hero">
+              <h2>Нова подорож</h2>
+              <p>${escapeHtml(activeTrip().title)} · маршрут ще порожній</p>
+              <div class="actions"><button class="btn" type="button" onclick="activateScreen('timeline')">Додати першу точку</button></div>
+            </div>
+          </section>
+        `;
+      }
       const title = item.title || routeGeneratedTitle(item);
       const docsCount = getTicketFiles().filter(file => file.ticketId === item.id).length;
       const linkedTickets = getRoutePointTickets(item.id).length;
@@ -1563,7 +1842,7 @@
             <label class="item"><input id="timelineAutoSort" type="checkbox" ${autoSort ? "checked" : ""} onchange="setTimelineAutoSort(this.checked)"><span>Автоматичне сортування за датою і часом</span></label>
             <div class="actions">
               <button class="btn" type="button" onclick="openPointForm()">Додати точку</button>
-              <button class="btn secondary" type="button" onclick="resetBaseRoute()">Відновити базовий маршрут</button>
+              ${activeTripCode === CANONICAL_TRIP_CODE ? `<button class="btn secondary" type="button" onclick="resetBaseRoute()">Відновити базовий маршрут</button>` : ""}
             </div>
           </div>
           <div class="timeline" id="timelineList">
@@ -1745,6 +2024,7 @@
     }
 
     function renderBudget() {
+      const currency = activeTrip().currency || "EUR";
       return `
         <section class="screen" id="screen-budget">
           <div class="card">
@@ -1752,7 +2032,7 @@
             <div class="form-grid">
               <div class="field"><label for="expenseName">Витрата</label><input id="expenseName" type="text" placeholder="Наприклад: вечеря в Laredo"></div>
               <div class="field"><label for="expenseCategory">Категорія</label><select id="expenseCategory"><option>Їжа</option><option>Житло</option><option>Транспорт</option><option>Аптека</option><option>Пляж</option><option>Інше</option></select></div>
-              <div class="field"><label for="expenseAmount">Сума, €</label><input id="expenseAmount" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00"></div>
+              <div class="field"><label for="expenseAmount">Сума, ${escapeHtml(currency)}</label><input id="expenseAmount" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00"></div>
               <div class="field"><label>&nbsp;</label><button id="addExpense" class="btn full" type="button">Додати витрату</button></div>
             </div>
           </div>
@@ -1865,15 +2145,19 @@
           <div class="card">
             <h2>Синхронізація</h2>
             <p class="muted">Supabase є додатковим шаром. Текстові дані синхронізуються через таблиці, а файли квитків - через Storage bucket camino-files. Якщо Supabase не налаштовано, усе працює локально як раніше.</p>
-            <div class="soft small"><strong>Поточна подорож:</strong> <code>${escapeHtml(config.tripCode || "camino-2026")}</code></div>
+            <div class="soft small"><strong>Поточна подорож:</strong> ${escapeHtml(activeTrip().title)}</div>
+            <div class="soft small"><strong>Trip Code:</strong> <code>${escapeHtml(config.tripCode || "camino-2026")}</code></div>
             ${tripWarning}
             ${legacyTripWarning}
             <div class="form-grid">
               <div class="field"><label for="syncUrl">Supabase URL</label><input id="syncUrl" type="url" value="${escapeHtml(config.url)}" placeholder="https://xxxx.supabase.co"></div>
               <div class="field"><label for="syncAnonKey">Publishable (anon) key</label><input id="syncAnonKey" type="password" value="${escapeHtml(config.anonKey)}" placeholder="eyJ..."></div>
-              <div class="field"><label for="syncTripCode">Trip Code</label><input id="syncTripCode" type="text" value="${escapeHtml(config.tripCode || "camino-2026")}" placeholder="camino-2026"></div>
               <div class="field"><label>Статус</label><div id="syncStatusText" class="soft">${escapeHtml(status)}</div></div>
             </div>
+            <details>
+              <summary>Advanced / Diagnostics</summary>
+              <div class="field"><label for="syncTripCode">Trip Code</label><input id="syncTripCode" type="text" value="${escapeHtml(config.tripCode || "camino-2026")}" placeholder="camino-2026"></div>
+            </details>
             <div class="actions">
               <button class="btn" type="button" onclick="connectSupabase()">Підключити</button>
               <button class="btn ghost" type="button" onclick="testSupabase()">Перевірити Supabase</button>
@@ -1928,7 +2212,7 @@
           <div class="actions">
             <button class="btn" type="button" onclick="exportJSON()">Експорт JSON</button>
             <button class="btn secondary" type="button" onclick="document.getElementById('importFile').click()">Імпорт JSON</button>
-            <button class="btn danger" type="button" onclick="resetBaseRoute()">Скинути демо-дані / відновити базовий маршрут</button>
+            ${activeTripCode === CANONICAL_TRIP_CODE ? `<button class="btn danger" type="button" onclick="resetBaseRoute()">Скинути демо-дані / відновити базовий маршрут</button>` : ""}
           </div>
           <p class="small muted">Файли квитків і фото щоденника зберігаються в IndexedDB або Supabase Storage, тому в JSON вони не входять.</p>
         </div>
@@ -1936,34 +2220,58 @@
     }
 
     function init() {
+      getTrips();
+      updateTripScopedStorageKeys();
+      initPWA();
+      initImport();
+      initAutosync();
+      if ((localStorage.getItem(PLANNER_MODE_KEY) || "trips") === "planner") {
+        refreshPlannerShell("today");
+      } else {
+        showTripSelector();
+      }
+      updateNetworkStatus();
+    }
+
+    function renderPlannerContextCard() {
+      const trip = activeTrip();
+      return `
+        <div class="card">
+          <div class="point-top">
+            <div>
+              <h2>${escapeHtml(trip.title)}</h2>
+              <p class="muted">${escapeHtml(trip.description || "Travel Planner")}</p>
+            </div>
+            <button class="btn secondary" type="button" onclick="showTripSelector()">← Мої подорожі</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function refreshPlannerShell(activeScreen = "today") {
+      updateHeader();
+      setBottomNavVisible(true);
       getRoutePoints();
-      screenRoot.innerHTML = screens.map(s => s.render()).join("");
+      screenRoot.innerHTML = renderPlannerContextCard() + screens.map(s => s.render()).join("");
       navRoot.innerHTML = navScreens.map((s, i) => `<button class="nav-btn ${i === 0 ? "active" : ""}" type="button" data-target="${s.id}"><span class="icon">${s.icon}</span><span>${s.label}</span></button>`).join("");
-      document.querySelectorAll(".screen").forEach((screen, index) => screen.classList.toggle("active", index === 0));
+      document.querySelectorAll(".screen").forEach(screen => screen.classList.toggle("active", screen.id === `screen-${activeScreen}`));
       document.querySelectorAll(".nav-btn").forEach(button => button.addEventListener("click", () => activateScreen(button.dataset.target)));
+      syncNavActive(activeScreen);
       document.querySelectorAll(".checklist").forEach(initChecklist);
       initBudget();
       initNotes();
       initSyncSettings();
-      initImport();
-      initPWA();
-      initAutosync();
-      updateNetworkStatus();
       renderAllAttachments();
       renderDiaryFiles();
     }
 
     function refresh() {
+      if ((localStorage.getItem(PLANNER_MODE_KEY) || "trips") !== "planner") {
+        showTripSelector();
+        return;
+      }
       const active = document.querySelector(".screen.active")?.id.replace("screen-", "") || "today";
-      screenRoot.innerHTML = screens.map(s => s.render()).join("");
-      document.querySelectorAll(".screen").forEach(screen => screen.classList.toggle("active", screen.id === `screen-${active}`));
-      syncNavActive(active);
-      document.querySelectorAll(".checklist").forEach(initChecklist);
-      initBudget();
-      initNotes();
-      initSyncSettings();
-      renderAllAttachments();
-      renderDiaryFiles();
+      refreshPlannerShell(active);
     }
 
     function activateScreen(id, options = {}) {
@@ -3102,7 +3410,7 @@
     }
     function saveExpenses(expenses, options = {}) {
       const deleted = options.includeDeleted ? [] : getAllExpenses().filter(isSoftDeleted);
-      localStorage.setItem("camino2026_expenses", JSON.stringify([...expenses, ...deleted]));
+      localStorage.setItem(tripStorageKey("expenses"), JSON.stringify([...expenses, ...deleted]));
       if (options.markDirty !== false) touchMany("expenses", expenses.map(item => String(item.id)));
       renderExpenses();
     }
@@ -3120,7 +3428,7 @@
         const category = val("expenseCategory");
         const amount = Number(val("expenseAmount"));
         if (!name || !Number.isFinite(amount) || amount <= 0) { alert("Додайте назву витрати і суму більше нуля."); return; }
-        saveExpenses([{ id: generateId(), name, category, amount, currency: "EUR", date: todayISO() }, ...getExpenses()]);
+        saveExpenses([{ id: generateId(), name, category, amount, currency: activeTrip().currency || "EUR", date: todayISO() }, ...getExpenses()]);
         document.getElementById("expenseName").value = "";
         document.getElementById("expenseAmount").value = "";
       });
@@ -3132,18 +3440,19 @@
       const total = document.getElementById("budgetTotal");
       if (!list || !total) return;
       const expenses = getExpenses();
-      total.textContent = `${expenses.reduce((sum, item) => sum + Number(item.amount || 0), 0).toFixed(2)} €`;
+      const currency = activeTrip().currency || "EUR";
+      total.textContent = `${expenses.reduce((sum, item) => sum + Number(item.amount || 0), 0).toFixed(2)} ${currency}`;
       list.innerHTML = expenses.length ? expenses.map(item => `
-        <div class="expense"><div><strong>${escapeHtml(item.name)}</strong><div class="small muted">${escapeHtml(item.category)} · ${Number(item.amount).toFixed(2)} €</div></div><button class="icon-btn" type="button" onclick="deleteExpense('${item.id}')">×</button></div>
+        <div class="expense"><div><strong>${escapeHtml(item.name)}</strong><div class="small muted">${escapeHtml(item.category)} · ${Number(item.amount).toFixed(2)} ${escapeHtml(item.currency || currency)}</div></div><button class="icon-btn" type="button" onclick="deleteExpense('${item.id}')">×</button></div>
       `).join("") : `<div class="empty">Поки немає витрат.</div>`;
     }
 
     function initNotes() {
       const area = document.getElementById("notesArea");
       if (!area) return;
-      area.value = localStorage.getItem("camino2026_notes") || "";
+      area.value = localStorage.getItem(tripStorageKey("notes")) || "";
       area.addEventListener("input", () => {
-        localStorage.setItem("camino2026_notes", area.value);
+        localStorage.setItem(tripStorageKey("notes"), area.value);
         touchSync("notes");
         document.getElementById("notesSaved").textContent = `Збережено локально: ${new Date().toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit" })}`;
       });
@@ -3157,14 +3466,14 @@
         bookings: getBookings(),
         diaryEntries: getDiaryEntries(),
         expenses: getExpenses(),
-        notes: localStorage.getItem("camino2026_notes") || "",
+        notes: localStorage.getItem(tripStorageKey("notes")) || "",
         checklists: Object.fromEntries(Object.values(checklists).map(list => [list.storage, readJSON(list.storage, [])]))
       };
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `camino-2026-export-${new Date().toISOString().slice(0,10)}.json`;
+      a.download = `${activeTripCode}-export-${new Date().toISOString().slice(0,10)}.json`;
       a.click();
       URL.revokeObjectURL(url);
     }
@@ -3185,9 +3494,13 @@
             }
             if (Array.isArray(data.bookings)) localStorage.setItem(BOOKINGS_KEY, JSON.stringify(data.bookings));
             if (Array.isArray(data.diaryEntries)) localStorage.setItem(DIARY_KEY, JSON.stringify(data.diaryEntries));
-            if (Array.isArray(data.expenses)) localStorage.setItem("camino2026_expenses", JSON.stringify(data.expenses));
-            if (typeof data.notes === "string") localStorage.setItem("camino2026_notes", data.notes);
-            if (data.checklists) Object.entries(data.checklists).forEach(([key, value]) => localStorage.setItem(key, JSON.stringify(value)));
+            if (Array.isArray(data.expenses)) localStorage.setItem(tripStorageKey("expenses"), JSON.stringify(data.expenses));
+            if (typeof data.notes === "string") localStorage.setItem(tripStorageKey("notes"), data.notes);
+            if (data.checklists) {
+              Object.entries(data.checklists).forEach(([key, value]) => {
+                localStorage.setItem(checklistStorageFromCloudKey(key), JSON.stringify(value));
+              });
+            }
             alert("Імпорт завершено. Файли не імпортуються з JSON.");
             refresh();
           } catch {
@@ -3200,22 +3513,27 @@
     }
 
     function readSyncForm() {
-      const rawTripCode = document.getElementById("syncTripCode")?.value.trim() || CANONICAL_TRIP_CODE;
+      const rawTripCode = document.getElementById("syncTripCode")?.value.trim() || activeTripCode;
       const tripCode = normalizeTripCode(rawTripCode);
       if (rawTripCode !== tripCode) {
         const input = document.getElementById("syncTripCode");
         if (input) input.value = tripCode;
         addSyncLog("trip_code normalized", `${rawTripCode} → ${tripCode}`);
       }
+      if (tripCode !== activeTripCode) {
+        const input = document.getElementById("syncTripCode");
+        if (input) input.value = activeTripCode;
+        addSyncLog("trip_code ignored", `sync uses active trip ${activeTripCode}`);
+      }
       return {
         url: document.getElementById("syncUrl")?.value.trim() || "",
         anonKey: document.getElementById("syncAnonKey")?.value.trim() || "",
-        tripCode
+        tripCode: activeTripCode
       };
     }
 
     function saveSyncConfig(config) {
-      localStorage.setItem(SYNC_CONFIG_KEY, JSON.stringify({ ...config, tripCode: normalizeTripCode(config.tripCode) }));
+      localStorage.setItem(SYNC_CONFIG_KEY, JSON.stringify({ url: config.url || "", anonKey: config.anonKey || "", tripCode: activeTripCode }));
     }
 
     function initSyncSettings() {
@@ -3446,7 +3764,7 @@
       setSyncDiagnostics(`<div class="soft">Перевірка цілісності маршруту...</div>`);
       try {
         const { client, tripCode } = getSupabaseClient();
-        const tripCodes = [...new Set([tripCode, CANONICAL_TRIP_CODE, "camino2026"])];
+        const tripCodes = tripCode === CANONICAL_TRIP_CODE ? [CANONICAL_TRIP_CODE, "camino2026"] : [tripCode];
         const [routesResult, ticketsResult, filesResult] = await Promise.all([
           client.from("route_points").select("*").in("trip_code", tripCodes),
           client.from("tickets").select("*").in("trip_code", tripCodes),
@@ -3643,12 +3961,28 @@
     }
 
     async function upsertTrip(client, tripCode) {
-      const { error } = await client.from("trips").upsert({
+      const trip = activeTrip();
+      const fullRow = {
         code: normalizeTripCode(tripCode),
-        title: "Camino del Norte 2026",
+        title: trip.title,
+        description: trip.description || "",
+        trip_type: trip.trip_type || "",
+        start_date: trip.start_date || "",
+        end_date: trip.end_date || "",
+        country: trip.countries || "",
+        countries: trip.countries || "",
+        currency: trip.currency || "EUR",
+        timezone: trip.timezone || "Europe/Kiev",
+        status: trip.status || "active",
         updated_at: nowISO()
-      }, { onConflict: "code" });
-      if (error) throw error;
+      };
+      const { error } = await client.from("trips").upsert(fullRow, { onConflict: "code" });
+      if (!error) return;
+      if (!/column|schema cache|Could not find/i.test(String(error.message || error.details || ""))) throw error;
+      const fallback = { code: normalizeTripCode(tripCode), title: trip.title, updated_at: nowISO() };
+      const { error: fallbackError } = await client.from("trips").upsert(fallback, { onConflict: "code" });
+      if (fallbackError) throw fallbackError;
+      addSyncLog("trips schema fallback", "used code/title only");
     }
 
     function routeToRow(item, index, tripCode) {
@@ -4193,7 +4527,7 @@
         saveTicketFiles(await hydrateAndCacheTicketFiles(client, fileMerge.items), { markDirty: false });
         saveDiaryEntries(diaryMerge.items, { includeDeleted: true, markDirty: false });
         saveDiaryFiles(await hydrateAndCacheDiaryFiles(client, diaryFileMerge.items), { markDirty: false });
-        localStorage.setItem("camino2026_expenses", JSON.stringify(expenseMerge.items));
+        localStorage.setItem(tripStorageKey("expenses"), JSON.stringify(expenseMerge.items));
         await pullNotes(client, tripCode);
         await pullChecklists(client, tripCode);
         localStorage.setItem(SYNC_LAST_TRIP_KEY, tripCode);
@@ -4255,13 +4589,9 @@
           DIARY_KEY,
           DIARY_FILES_KEY,
           DELETED_ROUTE_POINTS_KEY,
-          "camino2026_expenses",
-          "camino2026_notes",
-          "camino2026_serhii",
-          "camino2026_oksana",
-          "camino2026_vitaha",
-          "camino2026_shared",
-          "camino2026_med"
+          tripStorageKey("expenses"),
+          tripStorageKey("notes"),
+          ...Object.values(checklists).map(list => list.storage)
         ].forEach(key => localStorage.removeItem(key));
         await Promise.all([dbClear("routeAttachments"), dbClear("attachments"), dbClear("diaryFiles")]);
         addSyncLog("local cleared", "route_points, tickets, ticket_files, diary, checklists, notes, expenses, IndexedDB files");
@@ -4315,13 +4645,14 @@
         saveTicketFiles(await hydrateAndCacheTicketFiles(client, fileMerge.items), { markDirty: false });
         saveDiaryEntries(diaryMerge.items, { includeDeleted: true, markDirty: false });
         saveDiaryFiles(await hydrateAndCacheDiaryFiles(client, diaryFileMerge.items), { markDirty: false });
-        localStorage.setItem("camino2026_expenses", JSON.stringify(expenseMerge.items));
+        localStorage.setItem(tripStorageKey("expenses"), JSON.stringify(expenseMerge.items));
         checklistsRows.forEach(row => {
-          localStorage.setItem(row.list_key, JSON.stringify(row.state || []));
-          setLocalUpdated("checklists", row.list_key, row.updated_at || nowISO());
+          const storageKey = checklistStorageFromCloudKey(row.list_key);
+          localStorage.setItem(storageKey, JSON.stringify(row.state || []));
+          setLocalUpdated("checklists", storageKey, row.updated_at || nowISO());
         });
         if (notesResult.data) {
-          localStorage.setItem("camino2026_notes", notesResult.data.content || "");
+          localStorage.setItem(tripStorageKey("notes"), notesResult.data.content || "");
           setLocalUpdated("notes", "", notesResult.data.updated_at || nowISO());
         }
         localStorage.setItem(SYNC_LAST_TRIP_KEY, tripCode);
@@ -4454,7 +4785,7 @@
 
         const cloudExpenses = await cloudSelect(client, "expenses", tripCode);
         const expenseResult = mergeByUpdatedAt(getExpenses({ includeDeleted: true }), cloudExpenses, "expenses", rowToExpense, item => expenseToRow(item, tripCode));
-        localStorage.setItem("camino2026_expenses", JSON.stringify(expenseResult.local));
+        localStorage.setItem(tripStorageKey("expenses"), JSON.stringify(expenseResult.local));
         await cloudUpsert(client, "expenses", expenseResult.pushRows);
 
         await syncNotes(client, tripCode);
@@ -4513,7 +4844,7 @@
     async function uploadNotes(client, tripCode) {
       const updated_at = getLocalUpdated("notes") === "1970-01-01T00:00:00.000Z" ? nowISO() : getLocalUpdated("notes");
       setLocalUpdated("notes", "", updated_at);
-      const { error } = await client.from("notes").upsert({ trip_code: normalizeTripCode(tripCode), content: localStorage.getItem("camino2026_notes") || "", updated_at }, { onConflict: "trip_code" });
+      const { error } = await client.from("notes").upsert({ trip_code: normalizeTripCode(tripCode), content: localStorage.getItem(tripStorageKey("notes")) || "", updated_at }, { onConflict: "trip_code" });
       if (error) throw error;
     }
 
@@ -4521,7 +4852,7 @@
       const { data, error } = await client.from("notes").select("*").eq("trip_code", normalizeTripCode(tripCode)).maybeSingle();
       if (error) throw error;
       if (data) {
-        localStorage.setItem("camino2026_notes", data.content || "");
+        localStorage.setItem(tripStorageKey("notes"), data.content || "");
         setLocalUpdated("notes", "", data.updated_at || nowISO());
       }
     }
@@ -4531,7 +4862,7 @@
       if (error) throw error;
       const localUpdated = getLocalUpdated("notes");
       if (data && isCloudNewer(localUpdated, data.updated_at)) {
-        localStorage.setItem("camino2026_notes", data.content || "");
+        localStorage.setItem(tripStorageKey("notes"), data.content || "");
         setLocalUpdated("notes", "", data.updated_at || nowISO());
       } else {
         await uploadNotes(client, tripCode);
@@ -4554,8 +4885,9 @@
     async function pullChecklists(client, tripCode) {
       const rows = await cloudSelect(client, "checklists", tripCode);
       rows.forEach(row => {
-        localStorage.setItem(row.list_key, JSON.stringify(row.state || []));
-        setLocalUpdated("checklists", row.list_key, row.updated_at || nowISO());
+        const storageKey = checklistStorageFromCloudKey(row.list_key);
+        localStorage.setItem(storageKey, JSON.stringify(row.state || []));
+        setLocalUpdated("checklists", storageKey, row.updated_at || nowISO());
       });
       addSyncLog("синхронізовано чек-листи", `pull ${rows.length}`);
     }
@@ -4566,8 +4898,9 @@
       checklistRows(tripCode).forEach(localRow => {
         const cloud = cloudRows.find(row => row.list_key === localRow.list_key);
         if (cloud && isCloudNewer(getLocalUpdated("checklists", localRow.list_key), cloud.updated_at)) {
-          localStorage.setItem(cloud.list_key, JSON.stringify(cloud.state || []));
-          setLocalUpdated("checklists", cloud.list_key, cloud.updated_at || nowISO());
+          const storageKey = checklistStorageFromCloudKey(cloud.list_key);
+          localStorage.setItem(storageKey, JSON.stringify(cloud.state || []));
+          setLocalUpdated("checklists", storageKey, cloud.updated_at || nowISO());
         } else {
           pushRows.push(localRow);
         }

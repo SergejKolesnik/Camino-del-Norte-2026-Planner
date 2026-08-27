@@ -1,4 +1,4 @@
-const CACHE_NAME = "camino-del-norte-2026-v30-route-delete-keys";
+const CACHE_NAME = "camino-del-norte-2026-v31-trip-core";
 const APP_SHELL = [
   "./",
   "./index.html",

@@ -67,6 +67,25 @@ https://sergejkolesnik.github.io/Camino-del-Norte-2026-Planner/
 
 Канонічний код подорожі: `camino-2026`. Старий код `camino2026` застосунок автоматично нормалізує до `camino-2026`.
 
+## Multi-trip core
+
+Застосунок має локальний екран `Мої подорожі` і active trip context.
+
+- Active trip зберігається в `travelplanner_active_trip`.
+- Camino del Norte 2026 автоматично доступний як `camino-2026` / `trip_type = camino`.
+- Старі Camino localStorage ключі `camino2026_*` залишені без міграції, щоб не втратити наявні дані.
+- Нові подорожі використовують окремі localStorage ключі `travelplanner_<trip-code>_*`.
+- Supabase URL/key залишаються в локальних налаштуваннях; `trip_code` для sync береться з active trip.
+- Нові подорожі не отримують базовий Camino маршрут автоматично.
+
+Опціональна SQL-міграція для розширених metadata полів у `trips`:
+
+```text
+supabase-trips-metadata.sql
+```
+
+Її не потрібно запускати для базової роботи PWA. Якщо у таблиці `trips` є тільки `code`, `title`, `created_at`, `updated_at`, застосунок автоматично використовує fallback і синхронізує мінімальний набір полів.
+
 Для очищення вже створених дублікатів у Supabase використайте файл:
 
 ```text
