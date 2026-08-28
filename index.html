@@ -525,6 +525,8 @@
     let autosyncTimer = null;
     let isSyncing = false;
     let pendingSync = false;
+    let isSyncingTrips = false;
+    let tripsAutoPulled = false;
     let periodicSyncTimer = null;
     let diaryRecorder = null;
     let diaryRecordingChunks = [];
@@ -754,12 +756,26 @@
       return trips;
     }
 
+    function saveTrips(trips) {
+      const byCode = new Map([[CANONICAL_TRIP_CODE, CAMINO_TRIP]]);
+      (Array.isArray(trips) ? trips : []).map(normalizeTrip).forEach(trip => byCode.set(trip.code, trip));
+      const next = [...byCode.values()].sort((a, b) => String(a.start_date || "9999").localeCompare(String(b.start_date || "9999")) || a.title.localeCompare(b.title));
+      localStorage.setItem(TRIPS_KEY, JSON.stringify(next));
+      return next;
+    }
+
     function saveTrip(trip) {
       const normalized = normalizeTrip(trip);
       const trips = getTrips().filter(item => item.code !== normalized.code);
-      trips.push({ ...normalized, updated_at: nowISO() });
-      localStorage.setItem(TRIPS_KEY, JSON.stringify(trips));
-      return normalized;
+      const savedTrip = { ...normalized, updated_at: nowISO() };
+      trips.push(savedTrip);
+      saveTrips(trips);
+      return savedTrip;
+    }
+
+    function tripUpdatedAtMs(trip = {}) {
+      const time = Date.parse(trip.updated_at || trip.updatedAt || trip.created_at || trip.createdAt || "");
+      return Number.isFinite(time) ? time : 0;
     }
 
     function setActiveTrip(code, options = {}) {
@@ -778,6 +794,7 @@
       navRoot.innerHTML = "";
       screenRoot.innerHTML = renderTripSelector();
       window.scrollTo({ top: 0, behavior: "smooth" });
+      maybeAutoPullTripsFromSupabase();
     }
 
     function setBottomNavVisible(visible) {
@@ -805,6 +822,7 @@
               <button class="btn" type="button" onclick="openTripForm()">+ Створити подорож</button>
               ${config.url && config.anonKey ? `<button class="btn secondary" type="button" onclick="pullTripsFromSupabase()">Оновити з Supabase</button>` : ""}
             </div>
+            <div class="small muted" id="tripSyncStatus">${config.url && config.anonKey ? "Trips sync готовий" : "Supabase для trips ще не підключений"}</div>
           </div>
           <div class="trip-grid">
             ${trips.map(trip => `
@@ -824,20 +842,81 @@
       `;
     }
 
-    async function pullTripsFromSupabase() {
+    function setTripSyncStatus(message, kind = "") {
+      const box = document.getElementById("tripSyncStatus");
+      if (box) {
+        box.textContent = message;
+        box.className = `small muted ${kind}`.trim();
+      }
+    }
+
+    function canUseStoredSupabaseConfig() {
+      const config = readJSON(SYNC_CONFIG_KEY, { url: "", anonKey: "" });
+      return Boolean(config.url && config.anonKey && window.supabase && typeof window.supabase.createClient === "function");
+    }
+
+    function maybeAutoPullTripsFromSupabase() {
+      const config = readJSON(SYNC_CONFIG_KEY, { url: "", anonKey: "" });
+      if (tripsAutoPulled || !config.url || !config.anonKey || isSyncingTrips || navigator.onLine === false) return;
+      tripsAutoPulled = true;
+      window.setTimeout(() => pullTripsFromSupabase({ silent: true }), 0);
+    }
+
+    async function pullTripsFromSupabase(options = {}) {
+      const silent = Boolean(options.silent);
+      if (isSyncingTrips) return { added: 0, updated: 0, received: 0 };
+      isSyncingTrips = true;
       try {
         const config = readJSON(SYNC_CONFIG_KEY, { url: "", anonKey: "" });
         if (!config.url || !config.anonKey) throw new Error("Спочатку підключіть Supabase у вкладці Синхр.");
         if (!window.supabase || typeof window.supabase.createClient !== "function") throw new Error("Supabase CDN ще не завантажився.");
+        setTripSyncStatus("Оновлюю trips з Supabase...");
         const client = window.supabase.createClient(config.url, config.anonKey);
         const { data, error } = await client.from("trips").select("*");
         if (error) throw error;
         const existing = new Map(getTrips().map(trip => [trip.code, trip]));
-        (data || []).map(normalizeTrip).forEach(trip => existing.set(trip.code, { ...existing.get(trip.code), ...trip }));
-        localStorage.setItem(TRIPS_KEY, JSON.stringify([...existing.values()]));
+        let added = 0;
+        let updated = 0;
+        (data || []).map(normalizeTrip).forEach(trip => {
+          const localTrip = existing.get(trip.code);
+          if (!localTrip) {
+            added += 1;
+            existing.set(trip.code, trip);
+          } else if (tripUpdatedAtMs(trip) >= tripUpdatedAtMs(localTrip)) {
+            updated += 1;
+            existing.set(trip.code, { ...localTrip, ...trip });
+          }
+        });
+        saveTrips([...existing.values()]);
         showTripSelector();
+        setTripSyncStatus(`Trips оновлено: ${data?.length || 0} отримано, ${added} додано, ${updated} оновлено`, "green");
+        return { added, updated, received: data?.length || 0 };
       } catch (error) {
-        alert(`Не вдалося оновити trips: ${error.message}`);
+        setTripSyncStatus(`Помилка trips sync: ${error.message}`, "red");
+        if (!silent) alert(`Не вдалося оновити trips: ${error.message}`);
+        return { added: 0, updated: 0, received: 0, error };
+      } finally {
+        isSyncingTrips = false;
+      }
+    }
+
+    async function pushTripToSupabaseIfConfigured(trip, options = {}) {
+      const silent = Boolean(options.silent);
+      try {
+        if (!canUseStoredSupabaseConfig() || navigator.onLine === false) {
+          addSyncLog("trip saved locally", normalizeTrip(trip).code);
+          return { uploaded: 0, skipped: true };
+        }
+        const config = readJSON(SYNC_CONFIG_KEY, { url: "", anonKey: "" });
+        const client = window.supabase.createClient(config.url, config.anonKey);
+        const normalized = normalizeTrip(trip);
+        await upsertTrip(client, normalized.code, normalized);
+        addSyncLog("uploaded trip", normalized.code);
+        return { uploaded: 1, skipped: false };
+      } catch (error) {
+        addSyncLog("trip upload error", error.message);
+        if (!silent) setSyncStatus(`Trip збережено локально, cloud upload error: ${error.message}`);
+        return { uploaded: 0, skipped: false, error };
       }
     }
 
@@ -869,7 +948,7 @@
       openModal();
     }
 
-    function createTripFromForm() {
+    async function createTripFromForm() {
       const code = normalizeTripCode(val("tripCode"));
       const title = val("tripTitle");
       if (!title || !code) {
@@ -880,7 +959,7 @@
         alert("Code краще писати малими латинськими літерами, цифрами і дефісами, наприклад greece-2026.");
         return;
       }
-      saveTrip({
+      const trip = saveTrip({
         code,
         title,
         description: val("tripCountry"),
@@ -896,6 +975,7 @@
       });
       closeModal();
       setActiveTrip(code, { screen: "timeline", autosync: false });
+      await pushTripToSupabaseIfConfigured(trip);
     }
 
     updateTripScopedStorageKeys();
@@ -3962,8 +4042,8 @@
       }
     }
 
-    async function upsertTrip(client, tripCode) {
-      const trip = activeTrip();
+    async function upsertTrip(client, tripCode, tripOverride = null) {
+      const trip = normalizeTrip(tripOverride || activeTrip());
       const fullRow = {
         code: normalizeTripCode(tripCode),
         title: trip.title,

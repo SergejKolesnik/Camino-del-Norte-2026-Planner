@@ -1,4 +1,4 @@
-const CACHE_NAME = "travel-planner-v33-app-name";
+const CACHE_NAME = "travel-planner-v34-trip-sync";
 const APP_SHELL = [
   "./",
   "./index.html",

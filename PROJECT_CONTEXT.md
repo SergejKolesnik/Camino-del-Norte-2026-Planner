@@ -104,6 +104,7 @@ Ticket/document files use `ticket_files.ticket_id` as owner id. It can point eit
 - `camino2026` is normalized to `camino-2026`.
 - Non-Camino trips do not receive the default Camino route.
 - If the Supabase `trips` table does not yet have metadata columns, the app falls back to upserting only `code`, `title`, and `updated_at`.
+- Creating a trip pushes its metadata to Supabase when a saved Supabase config is available; opening `Мої подорожі` can pull cloud trips without touching route/documents sync.
 - Optional migration for trip metadata: `supabase-trips-metadata.sql`.
 
 ## Recently Completed
@@ -112,6 +113,7 @@ Ticket/document files use `ticket_files.ticket_id` as owner id. It can point eit
 - Trip creation form.
 - Active trip local state.
 - Local data isolation by active trip.
+- Trip metadata cloud lifecycle: new trips can be uploaded and pulled across devices.
 - PWA renamed from Camino-specific app name to `Travel Planner`.
 - Sync config fallback fix so URL/key are not erased when autosync runs outside the Sync screen.
 
@@ -121,15 +123,14 @@ Ticket/document files use `ticket_files.ticket_id` as owner id. It can point eit
   `SergejKolesnik/Camino-del-Norte-2026-Planner`.
 - Full interactive browser/mobile verification should still be repeated after major PWA changes.
 - Installed PWA name/icon updates may require app reinstall or service worker refresh on some devices.
-- Trip list sync is basic: trips can be read from Supabase, but the trip lifecycle can still be improved.
+- Trip edit/delete controls are not implemented yet.
 - Supabase schema may vary between devices/projects, so migrations should be run deliberately, not automatically.
 
 ## Recommended Next Work
 
 1. Verify installed PWA update behavior on Android/iPhone/Windows.
-2. Improve cloud lifecycle for `trips`: create/update trip on one device, pull it cleanly on another.
-3. Add explicit edit/delete controls for trips.
-4. Add diagnostics for active trip local key usage.
-5. Consider renaming the GitHub repository later if the product is no longer Camino-branded.
+2. Add explicit edit/delete controls for trips.
+3. Add diagnostics for active trip local key usage.
+4. Consider renaming the GitHub repository later if the product is no longer Camino-branded.
 
 Do not add new major planner features until multi-trip sync has been tested on at least two devices.
