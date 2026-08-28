@@ -1,4 +1,4 @@
-const CACHE_NAME = "camino-del-norte-2026-v31-trip-core";
+const CACHE_NAME = "camino-del-norte-2026-v32-sync-config-fallback";
 const APP_SHELL = [
   "./",
   "./index.html",

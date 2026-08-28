@@ -3513,21 +3513,23 @@
     }
 
     function readSyncForm() {
-      const rawTripCode = document.getElementById("syncTripCode")?.value.trim() || activeTripCode;
+      const stored = readJSON(SYNC_CONFIG_KEY, { url: "", anonKey: "", tripCode: CANONICAL_TRIP_CODE });
+      const urlInput = document.getElementById("syncUrl");
+      const anonKeyInput = document.getElementById("syncAnonKey");
+      const tripCodeInput = document.getElementById("syncTripCode");
+      const rawTripCode = tripCodeInput?.value.trim() || activeTripCode;
       const tripCode = normalizeTripCode(rawTripCode);
       if (rawTripCode !== tripCode) {
-        const input = document.getElementById("syncTripCode");
-        if (input) input.value = tripCode;
+        if (tripCodeInput) tripCodeInput.value = tripCode;
         addSyncLog("trip_code normalized", `${rawTripCode} → ${tripCode}`);
       }
       if (tripCode !== activeTripCode) {
-        const input = document.getElementById("syncTripCode");
-        if (input) input.value = activeTripCode;
+        if (tripCodeInput) tripCodeInput.value = activeTripCode;
         addSyncLog("trip_code ignored", `sync uses active trip ${activeTripCode}`);
       }
       return {
-        url: document.getElementById("syncUrl")?.value.trim() || "",
-        anonKey: document.getElementById("syncAnonKey")?.value.trim() || "",
+        url: urlInput ? urlInput.value.trim() : (stored.url || ""),
+        anonKey: anonKeyInput ? anonKeyInput.value.trim() : (stored.anonKey || ""),
         tripCode: activeTripCode
       };
     }
