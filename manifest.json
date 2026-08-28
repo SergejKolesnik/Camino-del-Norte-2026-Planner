@@ -1,7 +1,7 @@
 {
-  "name": "Camino del Norte 2026 Planner",
-  "short_name": "Camino 2026",
-  "description": "Офлайн travel-planner для Camino del Norte 2026.",
+  "name": "Travel Planner",
+  "short_name": "Travel",
+  "description": "Офлайн PWA для планування кількох подорожей.",
   "lang": "uk",
   "start_url": "./index.html",
   "scope": "./",

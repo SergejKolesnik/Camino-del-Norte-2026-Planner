@@ -1,4 +1,4 @@
-# Camino del Norte 2026 Planner
+# Travel Planner
 
 ## GitHub Pages
 
@@ -24,7 +24,7 @@ https://sergejkolesnik.github.io/Camino-del-Norte-2026-Planner/
 
 Supabase URL/key не хардкодяться. Їх потрібно ввести у вкладці `☁️ Синхр.` у самому застосунку.
 
-Мобільний офлайн travel-planner / PWA без фреймворків. Основний режим роботи локальний: `localStorage` + `IndexedDB`. Supabase-синхронізація є необов'язковою: текстові дані синхронізуються через таблиці, а файли квитків - через Supabase Storage bucket `camino-files`.
+Мобільний офлайн travel-planner / PWA без фреймворків. Основний режим роботи локальний: `localStorage` + `IndexedDB`. Supabase-синхронізація є необов'язковою: текстові дані синхронізуються через таблиці, а файли квитків - через Supabase Storage bucket `camino-files`. Початкова подорож у застосунку - Camino del Norte 2026.
 
 ## Основний репозиторій і workflow
 

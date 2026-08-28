@@ -1,8 +1,8 @@
-const CACHE_NAME = "camino-del-norte-2026-v32-sync-config-fallback";
+const CACHE_NAME = "travel-planner-v33-app-name";
 const APP_SHELL = [
   "./",
   "./index.html",
-  "./manifest.json?v=20260716",
+  "./manifest.json?v=20260828",
   "./service-worker.js",
   "./camino-icon-192.png?v=20260716",
   "./camino-icon-512.png?v=20260716"
