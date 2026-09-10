@@ -515,6 +515,7 @@
     const SYNC_CONFIG_KEY = "travelplanner_supabase_config";
     const SYNC_SETTINGS_KEY = "travelplanner_sync_settings";
     const FILES_BUCKET = "travel-planner-files";
+    const LOCAL_ONLY_MODE = true;
     let activeTripCode = localStorage.getItem(ACTIVE_TRIP_KEY) ? normalizeTripCode(localStorage.getItem(ACTIVE_TRIP_KEY)) : "";
     let ROUTE_KEY = "";
     let BOOKINGS_KEY = "";
@@ -562,7 +563,6 @@
       { id: "budget", icon: "€", label: "Бюджет", render: renderBudget },
       { id: "diary", icon: "📔", label: "Щоденник", render: renderDiary },
       { id: "notes", icon: "Н", label: "Нотатки", render: renderNotes },
-      { id: "sync", icon: "", label: "☁️ Синхр.", render: renderSync },
       { id: "more", icon: "•••", label: "Ще", render: renderMore }
     ];
     const navScreens = [
@@ -697,7 +697,7 @@
 
     function getTrips() {
       const saved = readJSON(TRIPS_KEY, []);
-      return (Array.isArray(saved) ? saved : []).filter(trip => trip && (trip.code || trip.trip_code)).map(normalizeTrip).filter(trip => trip.code !== "camino-2026" && trip.code !== "camino2026");
+      return (Array.isArray(saved) ? saved : []).filter(trip => trip && (trip.code || trip.trip_code)).map(normalizeTrip).filter(trip => !trip.is_demo && !trip.code.startsWith("demo-trip") && trip.code !== "camino-2026" && trip.code !== "camino2026");
     }
 
     function initializeTrips() {
@@ -769,13 +769,7 @@
 
     function renderTripSelector() {
       const trips = getTrips();
-      const config = readJSON(SYNC_CONFIG_KEY, { url: "", anonKey: "" });
-      const cloudReady = canUseStoredSupabaseConfig();
-      const cloudStatus = cloudReady
-        ? "Trips sync готовий"
-        : config.url && config.anonKey
-          ? "Увійдіть через email, щоб оновити cloud trips"
-          : "Cloud Sync не підключено · Local only";
+      const cloudStatus = "Дані зберігаються на цьому пристрої";
       return `
         <section class="screen active" id="screen-trips">
           <div class="card">
@@ -783,8 +777,6 @@
             <p class="muted">Кожна подорож має окремий маршрут, квитки, документи, бюджет, нотатки і чек-листи.</p>
             <div class="actions">
               <button class="btn" type="button" onclick="openTripForm()">+ Створити подорож</button>
-              ${cloudReady ? `<button class="btn secondary" type="button" onclick="pullTripsFromSupabase()">Оновити з Supabase</button>` : ""}
-              ${!cloudReady && config.url && config.anonKey ? `<button class="btn secondary" type="button" onclick="openEmailAuth()">Увійти через email</button>` : ""}
             </div>
             <div class="small muted" id="tripSyncStatus">${cloudStatus}</div>
           </div>
@@ -848,10 +840,11 @@
     }
 
     function isLocalOnly() {
-      return !activeTrip() || activeTrip().local_only === true || !hasCloudConfig();
+      return LOCAL_ONLY_MODE || !activeTrip() || activeTrip().local_only === true || !hasCloudConfig();
     }
 
     function canUseStoredSupabaseConfig() {
+      if (LOCAL_ONLY_MODE) return false;
       const config = readJSON(SYNC_CONFIG_KEY, { url: "", anonKey: "" });
       return Boolean(authUserId() && config.url && config.anonKey && window.supabase && typeof window.supabase.createClient === "function");
     }
@@ -2004,8 +1997,7 @@
         <section class="screen" id="screen-bookings">
           <div class="card">
             <h2>Квитки та бронювання</h2>
-            <p class="muted">Записи зберігаються в localStorage. Файли за Supabase підключенням завантажуються у Storage, без Supabase - локально в IndexedDB.</p>
-            <div class="soft small"><strong>Sync:</strong> <span id="syncCompactStatus">${escapeHtml(localStorage.getItem(SYNC_STATUS_KEY) || "Локально")}</span></div>
+            <p class="muted">Записи зберігаються на цьому пристрої. Вкладення зберігаються локально в IndexedDB.</p>
             <div class="actions"><button class="btn" type="button" onclick="openBookingForm()">Додати запис</button></div>
           </div>
           <div class="timeline">
@@ -2132,7 +2124,7 @@
         <section class="screen" id="screen-diary">
           <div class="card">
             <h2>Щоденник подорожі</h2>
-            <p class="muted">Фото, маленькі історії дня і прив'язка до маршруту. Якщо Supabase підключено, фото йдуть у Storage; без Supabase працює локальний IndexedDB fallback.</p>
+            <p class="muted">Фото, маленькі історії дня і прив'язка до маршруту зберігаються на цьому пристрої.</p>
             <div class="actions">
               <button class="btn" type="button" onclick="openDiaryForm()">Додати запис</button>
             </div>
@@ -2147,10 +2139,8 @@
     function renderMore() {
       const items = [
         ["packing", "Чек-лист", "Речі та підготовка"],
-        ["planb", "План Б", "Транспорт і скорочення"],
         ["budget", "Бюджет", "Витрати і підсумок"],
-        ["notes", "Нотатки", "Адреси, телефони, ідеї"],
-        ["sync", "☁️ Синхр.", "Supabase, backup, JSON"]
+        ["notes", "Нотатки", "Адреси, телефони, ідеї"]
       ];
       return `
         <section class="screen" id="screen-more">
@@ -2425,8 +2415,6 @@
         <p>Створіть свою першу подорож і зберігайте маршрут, документи, нотатки, бюджет та важливі місця в одному додатку.</p>
         <div class="actions">
           <button class="btn" type="button" onclick="openTripForm()">+ Створити подорож</button>
-          <button class="btn secondary" type="button" onclick="createDemoTrip()">Подивитися demo-подорож</button>
-          <button class="btn ghost" type="button" onclick="openCloudSetup()">Підключити Cloud Sync</button>
         </div>
         <p class="muted">Local only · Ваші дані зберігаються на цьому пристрої.</p>
         <button class="btn secondary" type="button" onclick="showInstallInstructions()">Встановити додаток</button>
@@ -2441,23 +2429,6 @@
       openModal();
     }
 
-    function createDemoTrip() {
-      let code = "demo-trip";
-      let index = 2;
-      while (getTrips().some(trip => trip.code === code)) code = `demo-trip-${index++}`;
-      saveTrip({ code, title: "Demo Trip", trip_type: "vacation", countries: "Greece", currency: "EUR", timezone: "Europe/Athens",
-        start_date: "2026-06-01", end_date: "2026-06-03", local_only: true, storage_version: 2, is_demo: true });
-      const points = [
-        point("2026-06-01", "10:00", "flight", "", "Athens", "✈️ Flight to Athens", "", "Демонстраційна подія", "", "заплановано"),
-        point("2026-06-01", "14:00", "hotel", "", "Athens", "🏨 Hotel check-in", "", "Демонстраційна подія", "", "заплановано"),
-        point("2026-06-02", "10:00", "інше", "", "", "🏖️ Beach", "", "Демонстраційна подія", "", "заплановано"),
-        point("2026-06-02", "19:00", "інше", "", "", "🍽️ Dinner", "", "Демонстраційна подія", "", "заплановано"),
-        point("2026-06-03", "09:00", "ferry", "", "", "⛴️ Ferry", "", "Демонстраційна подія", "", "заплановано")
-      ];
-      localStorage.setItem(tripStorageKey("route_points", code), JSON.stringify(points));
-      setActiveTrip(code, { screen: "timeline", autosync: false });
-    }
-
     async function init() {
       initializeTrips();
       updateTripScopedStorageKeys();
@@ -2470,12 +2441,14 @@
         showTripSelector();
       }
       updateNetworkStatus();
-      if (hasCloudConfig()) {
+      if (!LOCAL_ONLY_MODE && hasCloudConfig()) {
         await loadSupabaseSDK();
         await initializeCloudAuth();
       }
-      initAutosync();
-      if (localStorage.getItem(PLANNER_MODE_KEY) === "trips") maybeAutoPullTripsFromSupabase();
+      if (!LOCAL_ONLY_MODE) {
+        initAutosync();
+        if (localStorage.getItem(PLANNER_MODE_KEY) === "trips") maybeAutoPullTripsFromSupabase();
+      }
     }
 
     function renderPlannerContextCard() {
@@ -5172,7 +5145,8 @@
 
     function updateNetworkStatus() {
       const chip = document.getElementById("offlineStatus");
-      if (isLocalOnly()) { chip.textContent = "Local only · Cloud Sync не підключено"; return; }
+      if (LOCAL_ONLY_MODE) { chip.textContent = "Локальний режим"; return; }
+      if (isLocalOnly()) { chip.textContent = "Локальний режим"; return; }
       const savedStatus = localStorage.getItem(SYNC_STATUS_KEY);
       chip.textContent = savedStatus || (navigator.onLine ? "Локально" : "Офлайн-режим активний");
     }
