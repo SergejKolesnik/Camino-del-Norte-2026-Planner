@@ -853,6 +853,7 @@
             <div class="actions">
               <button class="btn" type="button" onclick="openTripForm()">+ Створити подорож</button>
               ${cloudReady ? `<button class="btn secondary" type="button" onclick="pullTripsFromSupabase()">Оновити з Supabase</button>` : ""}
+              ${!cloudReady && config.url && config.anonKey ? `<button class="btn secondary" type="button" onclick="openEmailAuth()">Увійти через email</button>` : ""}
             </div>
             <div class="small muted" id="tripSyncStatus">${cloudStatus}</div>
           </div>
