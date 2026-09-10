@@ -73,6 +73,8 @@ travelplanner_<trip-code>_<dataset>
 
 ## Sync Model
 
+Cloud Sync is opt-in. It uses Supabase email/password authentication and an `owner_id` column on every synced table. RLS must restrict every table and `camino-files` Storage object to `auth.uid()`. The required migration is `supabase-email-auth-rls.sql`; the earlier `anon_all_*` policies are not safe for public use.
+
 Supabase URL/key are stored locally and are never hardcoded.
 
 The active trip code is the source of truth for sync scope. Regular users should not have to edit `trip_code` manually.
