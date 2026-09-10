@@ -1,4 +1,4 @@
-const CACHE_NAME = "travel-planner-v35-public-local-first";
+const CACHE_NAME = "travel-planner-v36-email-auth";
 const APP_SHELL = [
   "./",
   "./index.html",

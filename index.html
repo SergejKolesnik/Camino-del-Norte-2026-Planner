@@ -538,6 +538,9 @@
     let isSyncingTrips = false;
     let tripsAutoPulled = false;
     let periodicSyncTimer = null;
+    let cloudClient = null;
+    let authUser = null;
+    let authSubscription = null;
     let diaryRecorder = null;
     let diaryRecordingChunks = [];
     let diaryRecordingStartedAt = 0;
@@ -878,13 +881,40 @@
       return Boolean(config.url && config.anonKey);
     }
 
+    function authUserId() {
+      return authUser?.id || "";
+    }
+
+    function configuredCloudClient() {
+      const config = readJSON(SYNC_CONFIG_KEY, {});
+      if (!config.url || !config.anonKey || !window.supabase?.createClient) return null;
+      if (!cloudClient) cloudClient = window.supabase.createClient(config.url, config.anonKey);
+      return cloudClient;
+    }
+
+    async function initializeCloudAuth() {
+      const client = configuredCloudClient();
+      if (!client?.auth) return;
+      const { data, error } = await client.auth.getUser();
+      authUser = error ? null : (data.user || null);
+      authSubscription?.unsubscribe?.();
+      authSubscription = client.auth.onAuthStateChange((_event, session) => {
+        authUser = session?.user || null;
+        setTimeout(() => {
+          if (localStorage.getItem(PLANNER_MODE_KEY) === "planner") refresh();
+          else showTripSelector();
+          if (authUser) maybeAutoPullTripsFromSupabase();
+        }, 0);
+      }).data.subscription;
+    }
+
     function isLocalOnly() {
       return !activeTrip() || activeTrip().local_only === true || !hasCloudConfig();
     }
 
     function canUseStoredSupabaseConfig() {
       const config = readJSON(SYNC_CONFIG_KEY, { url: "", anonKey: "" });
-      return Boolean(config.url && config.anonKey && window.supabase && typeof window.supabase.createClient === "function");
+      return Boolean(authUserId() && config.url && config.anonKey && window.supabase && typeof window.supabase.createClient === "function");
     }
 
     function maybeAutoPullTripsFromSupabase() {
@@ -901,9 +931,9 @@
       try {
         const config = readJSON(SYNC_CONFIG_KEY, { url: "", anonKey: "" });
         if (!config.url || !config.anonKey) throw new Error("Спочатку підключіть Supabase у вкладці Синхр.");
-        if (!window.supabase || typeof window.supabase.createClient !== "function") throw new Error("Supabase CDN ще не завантажився.");
+        const client = configuredCloudClient();
+        if (!client || !authUserId()) throw new Error("Увійдіть через email, щоб отримати cloud trips.");
         setTripSyncStatus("Оновлюю trips з Supabase...");
-        const client = window.supabase.createClient(config.url, config.anonKey);
         const { data, error } = await client.from("trips").select("*");
         if (error) throw error;
         const existing = new Map(getTrips().map(trip => [trip.code, trip]));
@@ -940,7 +970,8 @@
           return { uploaded: 0, skipped: true };
         }
         const config = readJSON(SYNC_CONFIG_KEY, { url: "", anonKey: "" });
-        const client = window.supabase.createClient(config.url, config.anonKey);
+        const client = configuredCloudClient();
+        if (!client || !authUserId()) throw new Error("Увійдіть через email, щоб синхронізувати подорож.");
         const normalized = normalizeTrip(trip);
         await upsertTrip(client, normalized.code, normalized);
         addSyncLog("uploaded trip", normalized.code);
@@ -1333,9 +1364,9 @@
 
     function getOptionalSupabaseClient() {
       const config = getSyncConfig();
-      if (!config.url || !config.anonKey || !config.tripCode) return null;
-      if (!window.supabase || typeof window.supabase.createClient !== "function") return null;
-      return { client: window.supabase.createClient(config.url, config.anonKey), tripCode: normalizeTripCode(config.tripCode) };
+      const client = configuredCloudClient();
+      if (!authUserId() || !config.url || !config.anonKey || !config.tripCode || !client) return null;
+      return { client, tripCode: normalizeTripCode(config.tripCode) };
     }
 
     function scheduleAutosync() {
@@ -2259,12 +2290,19 @@
     }
 
     function renderSync() {
-      if (isLocalOnly()) return `<section class="screen" id="screen-sync"><div class="card">
+      if (isLocalOnly()) {
+        const cloudAction = authUserId()
+          ? `<button class="btn" type="button" onclick="enableCloudForActiveTrip()">Увімкнути Cloud Sync для цієї подорожі</button>`
+          : hasCloudConfig()
+            ? `<button class="btn secondary" type="button" onclick="openEmailAuth()">Увійти через email</button>`
+            : `<button class="btn secondary" type="button" onclick="openCloudSetup()">Підключити Cloud Sync</button>`;
+        return `<section class="screen" id="screen-sync"><div class="card">
         <h2>Cloud Sync не підключено</h2>
         <p>Ваші подорожі зберігаються тільки на цьому пристрої.</p>
         <span class="chip">Local only</span>
-        <div class="actions"><button class="btn secondary" disabled>Підключити Cloud Sync — незабаром</button></div>
+        <div class="actions">${cloudAction}</div>
       </div>${renderBackupCard()}</section>`;
+      }
       const config = getSyncConfig();
       const rawConfig = readJSON(SYNC_CONFIG_KEY, { url: "", anonKey: "", tripCode: CANONICAL_TRIP_CODE });
       const settings = getSyncSettings();
@@ -2302,6 +2340,7 @@
               <button class="btn" type="button" onclick="syncNow()">Sync</button>
             </div>
           </div>
+          ${renderAccountCard()}
           <div class="card">
             <h3>Автосинхронізація</h3>
             <div class="form-grid">
@@ -2340,6 +2379,16 @@
       `;
     }
 
+    function renderAccountCard() {
+      const email = authUser?.email;
+      return `<div class="card">
+        <h3>Обліковий запис</h3>
+        ${email
+          ? `<p class="muted">Cloud Sync підключено для ${escapeHtml(email)}.</p><button class="btn secondary" type="button" onclick="signOutCloud()">Вийти</button>`
+          : `<p class="muted">Увійдіть через email, щоб синхронізувати цю подорож між своїми пристроями.</p><button class="btn" type="button" onclick="openEmailAuth()">Увійти через email</button>`}
+      </div>`;
+    }
+
     function renderBackupCard() {
       return `
         <div class="card">
@@ -2365,6 +2414,92 @@
       });
     }
 
+    function openCloudSetup() {
+      const config = readJSON(SYNC_CONFIG_KEY, { url: "", anonKey: "" });
+      modalContent.innerHTML = `<h2>Підключити Cloud Sync</h2>
+        <p class="muted">Потрібні URL і publishable key вашого Supabase-проєкту. Вони зберігаються лише у цьому браузері.</p>
+        <div class="form-grid">
+          <div class="field"><label for="cloudUrl">Supabase URL</label><input id="cloudUrl" type="url" value="${escapeHtml(config.url)}" placeholder="https://xxxx.supabase.co"></div>
+          <div class="field"><label for="cloudKey">Publishable key</label><input id="cloudKey" type="password" value="${escapeHtml(config.anonKey)}" placeholder="sb_publishable_..."></div>
+        </div>
+        <div class="actions"><button class="btn" type="button" onclick="saveCloudSetup()">Продовжити</button><button class="btn secondary" type="button" onclick="closeModal()">Скасувати</button></div>`;
+      openModal();
+    }
+
+    async function saveCloudSetup() {
+      const url = val("cloudUrl");
+      const anonKey = val("cloudKey");
+      if (!url || !anonKey) { alert("Введіть Supabase URL і publishable key."); return; }
+      localStorage.setItem(SYNC_CONFIG_KEY, JSON.stringify({ url, anonKey, tripCode: activeTripCode || "" }));
+      cloudClient = null;
+      authSubscription?.unsubscribe?.();
+      authSubscription = null;
+      await loadSupabaseSDK();
+      await initializeCloudAuth();
+      closeModal();
+      openEmailAuth();
+    }
+
+    function openEmailAuth() {
+      if (!hasCloudConfig()) { openCloudSetup(); return; }
+      modalContent.innerHTML = `<h2>Cloud Sync через email</h2>
+        <p class="muted">Використайте email і пароль. Після реєстрації може знадобитися підтвердити email.</p>
+        <div class="form-grid">
+          <div class="field"><label for="authEmail">Email</label><input id="authEmail" type="email" autocomplete="email" placeholder="you@example.com"></div>
+          <div class="field"><label for="authPassword">Пароль</label><input id="authPassword" type="password" autocomplete="current-password" minlength="8" placeholder="Щонайменше 8 символів"></div>
+        </div>
+        <div class="actions"><button class="btn" type="button" onclick="signInCloud()">Увійти</button><button class="btn secondary" type="button" onclick="signUpCloud()">Створити акаунт</button><button class="btn ghost" type="button" onclick="closeModal()">Скасувати</button></div>`;
+      openModal();
+    }
+
+    async function signInCloud() {
+      const email = val("authEmail");
+      const password = val("authPassword");
+      if (!email || !password) { alert("Введіть email і пароль."); return; }
+      const client = configuredCloudClient();
+      try {
+        const { data, error } = await client.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+        authUser = data.user || null;
+        closeModal();
+        refreshAfterAuth();
+      } catch (error) { alert(`Не вдалося увійти: ${error.message}`); }
+    }
+
+    async function signUpCloud() {
+      const email = val("authEmail");
+      const password = val("authPassword");
+      if (!email || password.length < 8) { alert("Введіть email і пароль щонайменше з 8 символів."); return; }
+      const client = configuredCloudClient();
+      try {
+        const { data, error } = await client.auth.signUp({ email, password, options: { emailRedirectTo: window.location.href.split("#")[0] } });
+        if (error) throw error;
+        authUser = data.user || null;
+        if (data.session) { closeModal(); refreshAfterAuth(); }
+        else alert("Перевірте пошту й підтвердьте email. Потім поверніться сюди та увійдіть.");
+      } catch (error) { alert(`Не вдалося створити акаунт: ${error.message}`); }
+    }
+
+    async function signOutCloud() {
+      const client = configuredCloudClient();
+      if (client?.auth) await client.auth.signOut();
+      authUser = null;
+      refreshAfterAuth();
+    }
+
+    function refreshAfterAuth() {
+      if (localStorage.getItem(PLANNER_MODE_KEY) === "planner") refresh();
+      else showTripSelector();
+    }
+
+    function enableCloudForActiveTrip() {
+      if (!authUserId()) { openEmailAuth(); return; }
+      const trip = activeTrip();
+      if (!trip) return;
+      saveTrip({ ...trip, local_only: false });
+      setActiveTrip(trip.code, { autosync: false });
+    }
+
     function showOnboarding() {
       localStorage.setItem(PLANNER_MODE_KEY, "trips");
       document.getElementById("appTitle").textContent = "Travel Planner";
@@ -2377,7 +2512,7 @@
         <div class="actions">
           <button class="btn" type="button" onclick="openTripForm()">+ Створити подорож</button>
           <button class="btn secondary" type="button" onclick="createDemoTrip()">Подивитися demo-подорож</button>
-          <button class="btn ghost" type="button" disabled>Підключити Cloud Sync — незабаром</button>
+          <button class="btn ghost" type="button" onclick="openCloudSetup()">Підключити Cloud Sync</button>
         </div>
         <p class="muted">Local only · Ваші дані зберігаються на цьому пристрої.</p>
         <button class="btn secondary" type="button" onclick="showInstallInstructions()">Встановити додаток</button>
@@ -2421,7 +2556,10 @@
         showTripSelector();
       }
       updateNetworkStatus();
-      if (hasCloudConfig()) await loadSupabaseSDK();
+      if (hasCloudConfig()) {
+        await loadSupabaseSDK();
+        await initializeCloudAuth();
+      }
       initAutosync();
       if (localStorage.getItem(PLANNER_MODE_KEY) === "trips") maybeAutoPullTripsFromSupabase();
     }
@@ -3092,7 +3230,7 @@
         const tripCode = normalizeTripCode(setup.tripCode);
         await upsertTrip(client, tripCode);
         const id = options.id || generateId();
-        const storagePath = `${safePathPart(tripCode)}/diary/${safePathPart(entryId)}/${id}_${safePathPart(file.name)}`;
+        const storagePath = `${cloudStoragePrefix()}/${safePathPart(tripCode)}/diary/${safePathPart(entryId)}/${id}_${safePathPart(file.name)}`;
         const { error: uploadError } = await client.storage.from("camino-files").upload(storagePath, file, {
           cacheControl: "3600",
           contentType: mimeType,
@@ -3101,6 +3239,7 @@
         if (uploadError) throw uploadError;
         const row = {
           id,
+          owner_id: authUserId(),
           trip_code: tripCode,
           entry_id: entryId,
           filename: file.name,
@@ -3225,6 +3364,11 @@
       return String(value || "file").normalize("NFKD").replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80) || "file";
     }
 
+    function cloudStoragePrefix() {
+      if (!authUserId()) throw new Error("Увійдіть через email, щоб працювати з Cloud Sync.");
+      return safePathPart(authUserId());
+    }
+
     async function trySaveTicketFileToSupabase(ticketId, file, options = {}) {
       const setup = options.client && options.tripCode ? { client: options.client, tripCode: options.tripCode } : getOptionalSupabaseClient();
       if (!setup || !navigator.onLine) return false;
@@ -3248,7 +3392,7 @@
         const tripCode = normalizeTripCode(setup.tripCode);
         await upsertTrip(client, tripCode);
         const id = options.id || generateId();
-        const storagePath = `${safePathPart(tripCode)}/tickets/${safePathPart(ticketId)}/${id}_${safePathPart(file.name)}`;
+        const storagePath = `${cloudStoragePrefix()}/${safePathPart(tripCode)}/tickets/${safePathPart(ticketId)}/${id}_${safePathPart(file.name)}`;
         const { error: uploadError } = await client.storage.from("camino-files").upload(storagePath, file, {
           cacheControl: "3600",
           contentType: mimeType,
@@ -3257,6 +3401,7 @@
         if (uploadError) throw uploadError;
         const row = {
           id,
+          owner_id: authUserId(),
           trip_code: normalizeTripCode(tripCode),
           ticket_id: ticketId,
           filename: file.name,
@@ -3764,10 +3909,12 @@
       if (!config.url || !config.anonKey || !config.tripCode) {
         throw new Error("Заповніть Supabase URL, anon key і код подорожі.");
       }
-      if (!window.supabase || typeof window.supabase.createClient !== "function") {
+      const client = configuredCloudClient();
+      if (!client) {
         throw new Error("Supabase CDN ще не завантажився або немає інтернету.");
       }
-      return { client: window.supabase.createClient(config.url, config.anonKey), tripCode: config.tripCode };
+      if (!authUserId()) throw new Error("Увійдіть через email, щоб увімкнути Cloud Sync.");
+      return { client, tripCode: config.tripCode };
     }
 
     async function connectSupabase() {
@@ -4165,6 +4312,7 @@
     async function upsertTrip(client, tripCode, tripOverride = null) {
       const trip = normalizeTrip(tripOverride || activeTrip());
       const fullRow = {
+        owner_id: authUserId(),
         code: normalizeTripCode(tripCode),
         title: trip.title,
         description: trip.description || "",
@@ -4178,11 +4326,11 @@
         status: trip.status || "active",
         updated_at: nowISO()
       };
-      const { error } = await client.from("trips").upsert(fullRow, { onConflict: "code" });
+      const { error } = await client.from("trips").upsert(fullRow, { onConflict: "owner_id,code" });
       if (!error) return;
       if (!/column|schema cache|Could not find/i.test(String(error.message || error.details || ""))) throw error;
-      const fallback = { code: normalizeTripCode(tripCode), title: trip.title, updated_at: nowISO() };
-      const { error: fallbackError } = await client.from("trips").upsert(fallback, { onConflict: "code" });
+      const fallback = { owner_id: authUserId(), code: normalizeTripCode(tripCode), title: trip.title, updated_at: nowISO() };
+      const { error: fallbackError } = await client.from("trips").upsert(fallback, { onConflict: "owner_id,code" });
       if (fallbackError) throw fallbackError;
       addSyncLog("trips schema fallback", "used code/title only");
     }
@@ -4195,6 +4343,7 @@
       setLocalUpdated("route_points", normalized.id, updated_at);
       return {
         id: normalized.id,
+        owner_id: authUserId(),
         trip_code: normalizeTripCode(tripCode),
         date: nullableText(normalized.date),
         time: nullableText(normalized.time),
@@ -4239,6 +4388,7 @@
       setLocalUpdated("tickets", item.id, updated_at);
       return {
         id: item.id,
+        owner_id: authUserId(),
         trip_code: normalizeTripCode(tripCode),
         type: item.type || "",
         title: item.name || item.title || "",
@@ -4273,6 +4423,7 @@
       setLocalUpdated("ticket_files", item.id, updated_at);
       return {
         id: item.id,
+        owner_id: authUserId(),
         trip_code: normalizeTripCode(tripCode),
         ticket_id: item.ticketId || item.ticket_id || "",
         filename: item.filename || "",
@@ -4308,6 +4459,7 @@
       setLocalUpdated("diary_entries", item.id, updated_at);
       return {
         id: item.id,
+        owner_id: authUserId(),
         trip_code: normalizeTripCode(tripCode),
         date: item.date || "",
         route_point_id: item.routePointId || item.route_point_id || "",
@@ -4344,6 +4496,7 @@
       setLocalUpdated("diary_files", item.id, updated_at);
       return {
         id: item.id,
+        owner_id: authUserId(),
         trip_code: normalizeTripCode(tripCode),
         entry_id: item.entryId || item.entry_id || "",
         filename: item.filename || "",
@@ -4406,6 +4559,7 @@
       setLocalUpdated("expenses", id, updated_at);
       return {
         id,
+        owner_id: authUserId(),
         trip_code: normalizeTripCode(tripCode),
         category: item.category || "",
         title: item.name || item.title || "",
@@ -5046,7 +5200,7 @@
     async function uploadNotes(client, tripCode) {
       const updated_at = getLocalUpdated("notes") === "1970-01-01T00:00:00.000Z" ? nowISO() : getLocalUpdated("notes");
       setLocalUpdated("notes", "", updated_at);
-      const { error } = await client.from("notes").upsert({ trip_code: normalizeTripCode(tripCode), content: localStorage.getItem(tripStorageKey("notes")) || "", updated_at }, { onConflict: "trip_code" });
+      const { error } = await client.from("notes").upsert({ owner_id: authUserId(), trip_code: normalizeTripCode(tripCode), content: localStorage.getItem(tripStorageKey("notes")) || "", updated_at }, { onConflict: "owner_id,trip_code" });
       if (error) throw error;
     }
 
@@ -5075,12 +5229,12 @@
       return Object.values(checklists).map(list => {
         const updated_at = getLocalUpdated("checklists", list.storage) === "1970-01-01T00:00:00.000Z" ? nowISO() : getLocalUpdated("checklists", list.storage);
         setLocalUpdated("checklists", list.storage, updated_at);
-        return { trip_code: normalizeTripCode(tripCode), list_key: list.storage, state: getChecklistState(list), updated_at };
+        return { owner_id: authUserId(), trip_code: normalizeTripCode(tripCode), list_key: list.storage, state: getChecklistState(list), updated_at };
       });
     }
 
     async function uploadChecklists(client, tripCode) {
-      await cloudUpsert(client, "checklists", checklistRows(tripCode), "trip_code,list_key");
+      await cloudUpsert(client, "checklists", checklistRows(tripCode), "owner_id,trip_code,list_key");
       addSyncLog("синхронізовано чек-листи", "upload");
     }
 
@@ -5107,7 +5261,7 @@
           pushRows.push(localRow);
         }
       });
-      await cloudUpsert(client, "checklists", pushRows, "trip_code,list_key");
+      await cloudUpsert(client, "checklists", pushRows, "owner_id,trip_code,list_key");
       addSyncLog("синхронізовано чек-листи", `sync ${pushRows.length} upload`);
     }
 

@@ -39,6 +39,19 @@ Supabase URL/key не хардкодяться. Їх потрібно ввест
 
 Основний режим роботи локальний: `localStorage` + `IndexedDB`. Supabase-синхронізація є необов'язковою: текстові дані синхронізуються через таблиці, а файли квитків - через Supabase Storage bucket `camino-files`.
 
+## Email Cloud Sync
+
+Cloud Sync використовує email і пароль через Supabase Auth. Без входу застосунок повністю працює локально. Кожен cloud record має `owner_id`, а RLS дозволяє читати й змінювати тільки власні подорожі.
+
+Перед публічним використанням:
+
+1. Створіть перший owner-акаунт через екран Cloud Sync.
+2. Скопіюйте його UUID з `Authentication → Users`.
+3. У [supabase-email-auth-rls.sql](supabase-email-auth-rls.sql) замініть `PASTE_OWNER_AUTH_USER_UUID_HERE` і запустіть файл у SQL Editor.
+4. У `Authentication → URL Configuration` додайте адресу GitHub Pages до `Site URL` і `Redirect URLs`.
+
+Не запускайте старий SQL-блок нижче для нового публічного проєкту: його `anon_all_*` policies відкривають дані анонімному ключу. Міграція email auth прибирає ці policies, переносить наявні owner-файли в папку UUID і зберігає наявні дані.
+
 ## Основний репозиторій і workflow
 
 GitHub є основним джерелом правди для проєкту.
