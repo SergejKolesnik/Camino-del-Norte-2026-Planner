@@ -1,8 +1,8 @@
-const CACHE_NAME = "travel-planner-v39-generic";
+const CACHE_NAME = "travel-planner-v40-local-only";
 const APP_SHELL = [
   "./",
   "./index.html",
-  "./manifest.json?v=20260828",
+  "./manifest.json?v=20260910-local-only",
   "./service-worker.js",
   "./travel-icon-192.png?v=20260910",
   "./travel-icon-512.png?v=20260910"
