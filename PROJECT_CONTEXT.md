@@ -4,4 +4,4 @@ Travel Planner — статичний offline-first застосунок для 
 
 Дані мають бути ізольовані кодом активної подорожі. Нова подорож починається порожньою та має префікс localStorage `travelplanner_<trip-code>_`.
 
-Cloud Sync є opt-in. Він використовує email/password Supabase Auth, RLS з `owner_id` для всіх таблиць і bucket `travel-planner-files` для вкладень. У браузер можна додавати лише URL і publishable key Supabase.
+Застосунок працює лише локально: дані зберігаються у localStorage, а вкладення — в IndexedDB цього пристрою. Cloud Sync зараз вимкнено та не показується в інтерфейсі.
