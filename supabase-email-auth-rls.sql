@@ -6,6 +6,10 @@
 
 begin;
 
+insert into storage.buckets (id, name, public)
+values ('travel-planner-files', 'travel-planner-files', false)
+on conflict (id) do update set public = false;
+
 select set_config('app.travel_planner_owner_id', 'PASTE_OWNER_AUTH_USER_UUID_HERE', true);
 
 do $$
@@ -60,7 +64,7 @@ begin
 
   -- Move existing private objects under the owner's folder and keep metadata in sync.
   update storage.objects set name = owner_uuid::text || '/' || name
-    where bucket_id = 'camino-files' and name not like owner_uuid::text || '/%';
+    where bucket_id = 'travel-planner-files' and name not like owner_uuid::text || '/%';
   update public.ticket_files set storage_path = owner_uuid::text || '/' || storage_path
     where storage_path <> '' and storage_path not like owner_uuid::text || '/%';
   update public.diary_files set storage_path = owner_uuid::text || '/' || storage_path
@@ -89,28 +93,24 @@ begin
 end $$;
 
 -- The first path segment in Storage is the authenticated user's UUID.
-drop policy if exists "anon_read_camino_files" on storage.objects;
-drop policy if exists "anon_insert_camino_files" on storage.objects;
-drop policy if exists "anon_update_camino_files" on storage.objects;
-drop policy if exists "anon_delete_camino_files" on storage.objects;
-drop policy if exists "owner_read_camino_files" on storage.objects;
-drop policy if exists "owner_insert_camino_files" on storage.objects;
-drop policy if exists "owner_update_camino_files" on storage.objects;
-drop policy if exists "owner_delete_camino_files" on storage.objects;
+drop policy if exists "owner_read_travel_files" on storage.objects;
+drop policy if exists "owner_insert_travel_files" on storage.objects;
+drop policy if exists "owner_update_travel_files" on storage.objects;
+drop policy if exists "owner_delete_travel_files" on storage.objects;
 
-create policy "owner_read_camino_files" on storage.objects
+create policy "owner_read_travel_files" on storage.objects
 for select to authenticated
-using (bucket_id = 'camino-files' and (storage.foldername(name))[1] = (select auth.uid()::text));
-create policy "owner_insert_camino_files" on storage.objects
+using (bucket_id = 'travel-planner-files' and (storage.foldername(name))[1] = (select auth.uid()::text));
+create policy "owner_insert_travel_files" on storage.objects
 for insert to authenticated
-with check (bucket_id = 'camino-files' and (storage.foldername(name))[1] = (select auth.uid()::text));
-create policy "owner_update_camino_files" on storage.objects
+with check (bucket_id = 'travel-planner-files' and (storage.foldername(name))[1] = (select auth.uid()::text));
+create policy "owner_update_travel_files" on storage.objects
 for update to authenticated
-using (bucket_id = 'camino-files' and (storage.foldername(name))[1] = (select auth.uid()::text))
-with check (bucket_id = 'camino-files' and (storage.foldername(name))[1] = (select auth.uid()::text));
-create policy "owner_delete_camino_files" on storage.objects
+using (bucket_id = 'travel-planner-files' and (storage.foldername(name))[1] = (select auth.uid()::text))
+with check (bucket_id = 'travel-planner-files' and (storage.foldername(name))[1] = (select auth.uid()::text));
+create policy "owner_delete_travel_files" on storage.objects
 for delete to authenticated
-using (bucket_id = 'camino-files' and (storage.foldername(name))[1] = (select auth.uid()::text));
+using (bucket_id = 'travel-planner-files' and (storage.foldername(name))[1] = (select auth.uid()::text));
 
 notify pgrst, 'reload schema';
 commit;
