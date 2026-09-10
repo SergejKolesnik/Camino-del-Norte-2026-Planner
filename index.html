@@ -12,7 +12,7 @@
   <link rel="manifest" href="manifest.json?v=20260828">
   <link rel="icon" href="camino-icon-192.png?v=20260716" type="image/png">
   <link rel="apple-touch-icon" href="camino-icon-192.png?v=20260716">
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" defer></script>
+
   <style>
     :root {
       --bg: #0b1821;
@@ -472,6 +472,13 @@
       .more-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
       .nav-btn { flex-basis: 92px; }
     }
+    .onboarding { max-width: 680px; margin: 0 auto; }
+    .onboarding p { line-height: 1.6; }
+    .onboarding .actions { flex-direction: column; align-items: stretch; }
+    .btn:disabled { opacity: .6; cursor: default; }
+    .field, .trip-card, .point-top > div { min-width: 0; }
+    .trip-card, .btn { overflow-wrap: anywhere; }
+    @media (max-width: 480px) { .form-grid { grid-template-columns: minmax(0, 1fr); } }
   </style>
 </head>
 <body>
@@ -479,8 +486,8 @@
     <header class="topbar">
       <div class="brand-row">
         <div>
-          <h1 id="appTitle">Camino del Norte 2026</h1>
-          <p id="appSubtitle">Дніпро → Варшава → Більбао → Сантандер → Таріфа → додому</p>
+          <h1 id="appTitle">Travel Planner</h1>
+          <p id="appSubtitle">Ваші подорожі на вашому пристрої</p>
         </div>
         <button id="installBtn" class="install-btn" type="button">Встановити</button>
       </div>
@@ -509,7 +516,10 @@
     const PLANNER_MODE_KEY = "travelplanner_screen_mode";
     const SYNC_CONFIG_KEY = "camino2026_supabase_config";
     const SYNC_SETTINGS_KEY = "camino2026_sync_settings";
-    let activeTripCode = normalizeTripCode(localStorage.getItem(ACTIVE_TRIP_KEY) || CANONICAL_TRIP_CODE);
+    // Capture legacy evidence before this version writes any storage keys.
+    const hasLegacyCamino = Object.keys(localStorage).some(key => key.startsWith("camino2026_"))
+      || [CANONICAL_TRIP_CODE, "camino2026"].includes(localStorage.getItem(ACTIVE_TRIP_KEY));
+    let activeTripCode = localStorage.getItem(ACTIVE_TRIP_KEY) ? normalizeTripCode(localStorage.getItem(ACTIVE_TRIP_KEY)) : "";
     let ROUTE_KEY = "";
     let BOOKINGS_KEY = "";
     let SYNC_META_KEY = "";
@@ -691,15 +701,19 @@
     }
 
     function activeTrip() {
-      return getTrips().find(trip => trip.code === activeTripCode) || CAMINO_TRIP;
+      return getTrips().find(trip => trip.code === activeTripCode) || null;
     }
 
     function tripStoragePrefix(code = activeTripCode) {
-      const normalized = normalizeTripCode(code);
+      const normalized = code ? normalizeTripCode(code) : "unselected";
       return normalized === CANONICAL_TRIP_CODE ? "camino2026" : `travelplanner_${normalized}`;
     }
 
     function tripStorageKey(suffix, code = activeTripCode) {
+      const trip = getTrips().find(item => item.code === code);
+      if (trip?.storage_version === 2) {
+        suffix = ({ booking_records: "tickets", deleted_route_points: "tombstones" })[suffix] || suffix;
+      }
       return `${tripStoragePrefix(code)}_${suffix}`;
     }
 
@@ -745,19 +759,22 @@
 
     function getTrips() {
       const saved = readJSON(TRIPS_KEY, []);
-      const byCode = new Map([[CANONICAL_TRIP_CODE, CAMINO_TRIP]]);
-      if (Array.isArray(saved)) {
-        saved.map(normalizeTrip).forEach(trip => byCode.set(trip.code, trip));
+      return (Array.isArray(saved) ? saved : []).filter(trip => trip && (trip.code || trip.trip_code)).map(normalizeTrip);
+    }
+
+    function initializeTrips() {
+      const trips = getTrips();
+      if (hasLegacyCamino && !trips.some(trip => trip.code === CANONICAL_TRIP_CODE)) {
+        trips.push(CAMINO_TRIP);
+        saveTrips(trips);
       }
-      if (!byCode.has(activeTripCode)) activeTripCode = CANONICAL_TRIP_CODE;
-      const trips = [...byCode.values()].sort((a, b) => String(a.start_date || "9999").localeCompare(String(b.start_date || "9999")) || a.title.localeCompare(b.title));
-      localStorage.setItem(TRIPS_KEY, JSON.stringify(trips));
-      localStorage.setItem(ACTIVE_TRIP_KEY, activeTripCode);
-      return trips;
+      if (!trips.some(trip => trip.code === activeTripCode)) activeTripCode = trips[0]?.code || "";
+      if (activeTripCode) localStorage.setItem(ACTIVE_TRIP_KEY, activeTripCode);
+      else localStorage.removeItem(ACTIVE_TRIP_KEY);
     }
 
     function saveTrips(trips) {
-      const byCode = new Map([[CANONICAL_TRIP_CODE, CAMINO_TRIP]]);
+      const byCode = new Map();
       (Array.isArray(trips) ? trips : []).map(normalizeTrip).forEach(trip => byCode.set(trip.code, trip));
       const next = [...byCode.values()].sort((a, b) => String(a.start_date || "9999").localeCompare(String(b.start_date || "9999")) || a.title.localeCompare(b.title));
       localStorage.setItem(TRIPS_KEY, JSON.stringify(next));
@@ -779,15 +796,20 @@
     }
 
     function setActiveTrip(code, options = {}) {
-      activeTripCode = normalizeTripCode(code || CANONICAL_TRIP_CODE);
+      if (!getTrips().some(trip => trip.code === normalizeTripCode(code))) return;
+      clearTimeout(autosyncTimer);
+      activeTripCode = normalizeTripCode(code);
       localStorage.setItem(ACTIVE_TRIP_KEY, activeTripCode);
       updateTripScopedStorageKeys();
       if (options.showPlanner !== false) localStorage.setItem(PLANNER_MODE_KEY, "planner");
       refreshPlannerShell(options.screen || "today");
+      setupPeriodicSync();
+      updateNetworkStatus();
       if (options.autosync !== false) autosyncNow();
     }
 
     function showTripSelector() {
+      if (!getTrips().length) { showOnboarding(); return; }
       localStorage.setItem(PLANNER_MODE_KEY, "trips");
       updateHeader();
       setBottomNavVisible(false);
@@ -804,6 +826,7 @@
 
     function updateHeader() {
       const trip = activeTrip();
+      if (!trip) return;
       const title = document.getElementById("appTitle");
       const subtitle = document.getElementById("appSubtitle");
       if (title) title.textContent = localStorage.getItem(PLANNER_MODE_KEY) === "trips" ? "Мої подорожі" : trip.title;
@@ -822,7 +845,7 @@
               <button class="btn" type="button" onclick="openTripForm()">+ Створити подорож</button>
               ${config.url && config.anonKey ? `<button class="btn secondary" type="button" onclick="pullTripsFromSupabase()">Оновити з Supabase</button>` : ""}
             </div>
-            <div class="small muted" id="tripSyncStatus">${config.url && config.anonKey ? "Trips sync готовий" : "Supabase для trips ще не підключений"}</div>
+            <div class="small muted" id="tripSyncStatus">${config.url && config.anonKey ? "Trips sync готовий" : "Cloud Sync не підключено · Local only"}</div>
           </div>
           <div class="trip-grid">
             ${trips.map(trip => `
@@ -850,6 +873,15 @@
       }
     }
 
+    function hasCloudConfig() {
+      const config = readJSON(SYNC_CONFIG_KEY, {});
+      return Boolean(config.url && config.anonKey);
+    }
+
+    function isLocalOnly() {
+      return !activeTrip() || activeTrip().local_only === true || !hasCloudConfig();
+    }
+
     function canUseStoredSupabaseConfig() {
       const config = readJSON(SYNC_CONFIG_KEY, { url: "", anonKey: "" });
       return Boolean(config.url && config.anonKey && window.supabase && typeof window.supabase.createClient === "function");
@@ -857,7 +889,7 @@
 
     function maybeAutoPullTripsFromSupabase() {
       const config = readJSON(SYNC_CONFIG_KEY, { url: "", anonKey: "" });
-      if (tripsAutoPulled || !config.url || !config.anonKey || isSyncingTrips || navigator.onLine === false) return;
+      if (tripsAutoPulled || !canUseStoredSupabaseConfig() || isSyncingTrips || navigator.onLine === false) return;
       tripsAutoPulled = true;
       window.setTimeout(() => pullTripsFromSupabase({ silent: true }), 0);
     }
@@ -882,7 +914,7 @@
           if (!localTrip) {
             added += 1;
             existing.set(trip.code, trip);
-          } else if (tripUpdatedAtMs(trip) >= tripUpdatedAtMs(localTrip)) {
+          } else if (!localTrip.local_only && tripUpdatedAtMs(trip) >= tripUpdatedAtMs(localTrip)) {
             updated += 1;
             existing.set(trip.code, { ...localTrip, ...trip });
           }
@@ -903,7 +935,7 @@
     async function pushTripToSupabaseIfConfigured(trip, options = {}) {
       const silent = Boolean(options.silent);
       try {
-        if (!canUseStoredSupabaseConfig() || navigator.onLine === false) {
+        if (trip.local_only || !canUseStoredSupabaseConfig() || navigator.onLine === false) {
           addSyncLog("trip saved locally", normalizeTrip(trip).code);
           return { uploaded: 0, skipped: true };
         }
@@ -949,7 +981,7 @@
     }
 
     async function createTripFromForm() {
-      const code = normalizeTripCode(val("tripCode"));
+      const code = val("tripCode");
       const title = val("tripTitle");
       if (!title || !code) {
         alert("Додайте назву і code подорожі.");
@@ -959,7 +991,17 @@
         alert("Code краще писати малими латинськими літерами, цифрами і дефісами, наприклад greece-2026.");
         return;
       }
+      if (normalizeTripCode(code) === CANONICAL_TRIP_CODE || getTrips().some(trip => trip.code === code)) {
+        alert("Цей code уже використовується або зарезервований. Оберіть інший.");
+        return;
+      }
+      if (val("tripStart") && val("tripEnd") && val("tripEnd") < val("tripStart")) {
+        alert("Дата завершення має бути не раніше дати початку.");
+        return;
+      }
       const trip = saveTrip({
+        local_only: true,
+        storage_version: 2,
         code,
         title,
         description: val("tripCountry"),
@@ -981,7 +1023,10 @@
     updateTripScopedStorageKeys();
 
     function getChecklistState(list) {
-      const saved = readJSON(list.storage, null);
+      const saved = activeTrip()?.storage_version === 2
+        ? readJSON(tripStorageKey("checklists"), {})[list.key] || null
+        : readJSON(list.storage, null);
+      if (!saved && activeTrip()?.storage_version === 2) return { version: 2, items: [] };
       if (saved && Array.isArray(saved.items)) {
         return {
           version: 2,
@@ -1005,7 +1050,10 @@
     }
 
     function saveChecklistState(list, state, options = {}) {
-      localStorage.setItem(list.storage, JSON.stringify({ version: 2, items: state.items }));
+      if (activeTrip()?.storage_version === 2) {
+        const key = tripStorageKey("checklists");
+        localStorage.setItem(key, JSON.stringify({ ...readJSON(key, {}), [list.key]: { version: 2, items: state.items } }));
+      } else localStorage.setItem(list.storage, JSON.stringify({ version: 2, items: state.items }));
       if (options.markDirty !== false) touchSync("checklists", list.storage);
     }
 
@@ -1072,7 +1120,7 @@
       const compact = document.getElementById("syncCompactStatus");
       if (compact) compact.textContent = value;
       const top = document.getElementById("offlineStatus");
-      if (top) top.textContent = value;
+      if (top) top.textContent = isLocalOnly() ? "Local only · Cloud Sync не підключено" : value;
     }
 
     function syncedNowLabel() {
@@ -1099,10 +1147,11 @@
 
     function getSyncConfig() {
       const config = readJSON(SYNC_CONFIG_KEY, { url: "", anonKey: "", tripCode: CANONICAL_TRIP_CODE });
-      return { ...config, tripCode: activeTripCode };
+      return { ...config, ...(isLocalOnly() ? { url: "", anonKey: "" } : {}), tripCode: activeTripCode };
     }
 
     function getSyncSettings() {
+      if (isLocalOnly()) return { autosync: false, intervalMinutes: 5, syncOnOpen: false };
       return readJSON(SYNC_SETTINGS_KEY, { autosync: true, intervalMinutes: 5, syncOnOpen: true });
     }
 
@@ -1299,6 +1348,7 @@
     }
 
     async function autosyncNow() {
+      if (isLocalOnly()) return;
       if (isSyncing) {
         pendingSync = true;
         return;
@@ -2068,7 +2118,7 @@
       return `
         <section class="screen" id="screen-${id}">
           <div class="card checklist" data-checklist="${id}" data-storage="${list.storage}">
-            <h2>${list.title}</h2>
+            <h2>${activeTrip()?.storage_version === 2 ? "Чек-лист" : list.title}</h2>
             <p class="small muted doneText"></p>
             <div class="progress"><div class="bar"></div></div>
             <div class="items">${state.items.map(item => `
@@ -2155,11 +2205,11 @@
       return `
         <section class="screen" id="screen-more">
           <div class="card">
-            <h2>Ще</h2>
+            <h2>Ще</h2><button class="btn secondary" type="button" onclick="showInstallInstructions()">Встановити додаток</button>
             <p class="muted">Усе, що не потрібно щохвилини, але важливо мати під рукою.</p>
           </div>
           <div class="more-grid">
-            ${items.map(([id, title, text]) => `
+            ${items.filter(([id]) => activeTrip()?.storage_version !== 2 || !["serhii", "oksana", "vitaha", "med", "planb"].includes(id)).map(([id, title, text]) => `
               <button class="more-tile" type="button" onclick="activateScreen('${id}')">
                 <strong>${escapeHtml(title)}</strong>
                 <span>${escapeHtml(text)}</span>
@@ -2209,6 +2259,12 @@
     }
 
     function renderSync() {
+      if (isLocalOnly()) return `<section class="screen" id="screen-sync"><div class="card">
+        <h2>Cloud Sync не підключено</h2>
+        <p>Ваші подорожі зберігаються тільки на цьому пристрої.</p>
+        <span class="chip">Local only</span>
+        <div class="actions"><button class="btn secondary" disabled>Підключити Cloud Sync — незабаром</button></div>
+      </div>${renderBackupCard()}</section>`;
       const config = getSyncConfig();
       const rawConfig = readJSON(SYNC_CONFIG_KEY, { url: "", anonKey: "", tripCode: CANONICAL_TRIP_CODE });
       const settings = getSyncSettings();
@@ -2299,18 +2355,75 @@
       `;
     }
 
-    function init() {
-      getTrips();
+    function loadSupabaseSDK() {
+      if (window.supabase) return Promise.resolve();
+      return new Promise(resolve => {
+        const script = document.createElement("script");
+        script.src = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2";
+        script.onload = script.onerror = resolve;
+        document.head.appendChild(script);
+      });
+    }
+
+    function showOnboarding() {
+      localStorage.setItem(PLANNER_MODE_KEY, "trips");
+      document.getElementById("appTitle").textContent = "Travel Planner";
+      document.getElementById("appSubtitle").textContent = "Ваші подорожі на вашому пристрої";
+      setBottomNavVisible(false);
+      navRoot.innerHTML = "";
+      screenRoot.innerHTML = `<section class="screen active" id="screen-onboarding"><div class="card onboarding">
+        <h2>Travel Planner</h2>
+        <p>Створіть свою першу подорож і зберігайте маршрут, документи, нотатки, бюджет та важливі місця в одному додатку.</p>
+        <div class="actions">
+          <button class="btn" type="button" onclick="openTripForm()">+ Створити подорож</button>
+          <button class="btn secondary" type="button" onclick="createDemoTrip()">Подивитися demo-подорож</button>
+          <button class="btn ghost" type="button" disabled>Підключити Cloud Sync — незабаром</button>
+        </div>
+        <p class="muted">Local only · Ваші дані зберігаються на цьому пристрої.</p>
+        <button class="btn secondary" type="button" onclick="showInstallInstructions()">Встановити додаток</button>
+      </div></section>`;
+    }
+
+    function showInstallInstructions() {
+      modalContent.innerHTML = `<h2>Встановити додаток</h2>
+        <h3>Android</h3><ol><li>Відкрити посилання в Chrome.</li><li>Натиснути меню ⋮.</li><li>Обрати «Встановити застосунок» або «Додати на головний екран».</li></ol>
+        <h3>iPhone</h3><ol><li>Відкрити посилання в Safari.</li><li>Натиснути Share.</li><li>Обрати «На екран Початок».</li><li>Натиснути «Додати».</li></ol>
+        <button class="btn" type="button" onclick="closeModal()">Зрозуміло</button>`;
+      openModal();
+    }
+
+    function createDemoTrip() {
+      let code = "demo-trip";
+      let index = 2;
+      while (getTrips().some(trip => trip.code === code)) code = `demo-trip-${index++}`;
+      saveTrip({ code, title: "Demo Trip", trip_type: "vacation", countries: "Greece", currency: "EUR", timezone: "Europe/Athens",
+        start_date: "2026-06-01", end_date: "2026-06-03", local_only: true, storage_version: 2, is_demo: true });
+      const points = [
+        point("2026-06-01", "10:00", "flight", "", "Athens", "✈️ Flight to Athens", "", "Демонстраційна подія", "", "заплановано"),
+        point("2026-06-01", "14:00", "hotel", "", "Athens", "🏨 Hotel check-in", "", "Демонстраційна подія", "", "заплановано"),
+        point("2026-06-02", "10:00", "інше", "", "", "🏖️ Beach", "", "Демонстраційна подія", "", "заплановано"),
+        point("2026-06-02", "19:00", "інше", "", "", "🍽️ Dinner", "", "Демонстраційна подія", "", "заплановано"),
+        point("2026-06-03", "09:00", "ferry", "", "", "⛴️ Ferry", "", "Демонстраційна подія", "", "заплановано")
+      ];
+      localStorage.setItem(tripStorageKey("route_points", code), JSON.stringify(points));
+      setActiveTrip(code, { screen: "timeline", autosync: false });
+    }
+
+    async function init() {
+      initializeTrips();
       updateTripScopedStorageKeys();
       initPWA();
       initImport();
-      initAutosync();
-      if ((localStorage.getItem(PLANNER_MODE_KEY) || "trips") === "planner") {
+      if (!getTrips().length) showOnboarding();
+      else if ((localStorage.getItem(PLANNER_MODE_KEY) || "trips") === "planner") {
         refreshPlannerShell("today");
       } else {
         showTripSelector();
       }
       updateNetworkStatus();
+      if (hasCloudConfig()) await loadSupabaseSDK();
+      initAutosync();
+      if (localStorage.getItem(PLANNER_MODE_KEY) === "trips") maybeAutoPullTripsFromSupabase();
     }
 
     function renderPlannerContextCard() {
@@ -2329,10 +2442,11 @@
     }
 
     function refreshPlannerShell(activeScreen = "today") {
+      if (!activeTrip()) { showOnboarding(); return; }
       updateHeader();
       setBottomNavVisible(true);
       getRoutePoints();
-      screenRoot.innerHTML = renderPlannerContextCard() + screens.map(s => s.render()).join("");
+      screenRoot.innerHTML = renderPlannerContextCard() + screens.filter(s => activeTrip()?.storage_version !== 2 || !["serhii", "oksana", "vitaha", "med", "planb"].includes(s.id)).map(s => s.render()).join("");
       navRoot.innerHTML = navScreens.map((s, i) => `<button class="nav-btn ${i === 0 ? "active" : ""}" type="button" data-target="${s.id}"><span class="icon">${s.icon}</span><span>${s.label}</span></button>`).join("");
       document.querySelectorAll(".screen").forEach(screen => screen.classList.toggle("active", screen.id === `screen-${activeScreen}`));
       document.querySelectorAll(".nav-btn").forEach(button => button.addEventListener("click", () => activateScreen(button.dataset.target)));
@@ -3547,7 +3661,7 @@
         diaryEntries: getDiaryEntries(),
         expenses: getExpenses(),
         notes: localStorage.getItem(tripStorageKey("notes")) || "",
-        checklists: Object.fromEntries(Object.values(checklists).map(list => [list.storage, readJSON(list.storage, [])]))
+        checklists: Object.fromEntries(Object.values(checklists).map(list => [list.storage, getChecklistState(list)]))
       };
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
@@ -3578,6 +3692,11 @@
             if (typeof data.notes === "string") localStorage.setItem(tripStorageKey("notes"), data.notes);
             if (data.checklists) {
               Object.entries(data.checklists).forEach(([key, value]) => {
+                if (activeTrip()?.storage_version === 2) {
+                  const list = Object.values(checklists).find(item => item.storage === key || key.endsWith("_" + item.key));
+                  if (list) saveChecklistState(list, { items: value.items || [] });
+                  return;
+                }
                 localStorage.setItem(checklistStorageFromCloudKey(key), JSON.stringify(value));
               });
             }
@@ -3639,6 +3758,7 @@
     }
 
     function getSupabaseClient() {
+      if (isLocalOnly()) throw new Error("Ця подорож зберігається тільки локально.");
       const config = readSyncForm();
       saveSyncConfig(config);
       if (!config.url || !config.anonKey || !config.tripCode) {
@@ -4993,6 +5113,7 @@
 
     function updateNetworkStatus() {
       const chip = document.getElementById("offlineStatus");
+      if (isLocalOnly()) { chip.textContent = "Local only · Cloud Sync не підключено"; return; }
       const savedStatus = localStorage.getItem(SYNC_STATUS_KEY);
       chip.textContent = savedStatus || (navigator.onLine ? "Локально" : "Офлайн-режим активний");
     }
