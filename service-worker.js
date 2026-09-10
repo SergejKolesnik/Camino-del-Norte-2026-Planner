@@ -1,11 +1,11 @@
-const CACHE_NAME = "travel-planner-v37-auth-session-state";
+const CACHE_NAME = "travel-planner-v39-generic";
 const APP_SHELL = [
   "./",
   "./index.html",
   "./manifest.json?v=20260828",
   "./service-worker.js",
-  "./camino-icon-192.png?v=20260716",
-  "./camino-icon-512.png?v=20260716"
+  "./travel-icon-192.png?v=20260910",
+  "./travel-icon-512.png?v=20260910"
 ];
 
 self.addEventListener("install", event => {
