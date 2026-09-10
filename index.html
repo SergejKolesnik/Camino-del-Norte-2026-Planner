@@ -839,6 +839,12 @@
     function renderTripSelector() {
       const trips = getTrips();
       const config = readJSON(SYNC_CONFIG_KEY, { url: "", anonKey: "" });
+      const cloudReady = canUseStoredSupabaseConfig();
+      const cloudStatus = cloudReady
+        ? "Trips sync готовий"
+        : config.url && config.anonKey
+          ? "Увійдіть через email, щоб оновити cloud trips"
+          : "Cloud Sync не підключено · Local only";
       return `
         <section class="screen active" id="screen-trips">
           <div class="card">
@@ -846,9 +852,9 @@
             <p class="muted">Кожна подорож має окремий маршрут, квитки, документи, бюджет, нотатки і чек-листи.</p>
             <div class="actions">
               <button class="btn" type="button" onclick="openTripForm()">+ Створити подорож</button>
-              ${config.url && config.anonKey ? `<button class="btn secondary" type="button" onclick="pullTripsFromSupabase()">Оновити з Supabase</button>` : ""}
+              ${cloudReady ? `<button class="btn secondary" type="button" onclick="pullTripsFromSupabase()">Оновити з Supabase</button>` : ""}
             </div>
-            <div class="small muted" id="tripSyncStatus">${config.url && config.anonKey ? "Trips sync готовий" : "Cloud Sync не підключено · Local only"}</div>
+            <div class="small muted" id="tripSyncStatus">${cloudStatus}</div>
           </div>
           <div class="trip-grid">
             ${trips.map(trip => `
@@ -903,6 +909,7 @@
         setTimeout(() => {
           if (localStorage.getItem(PLANNER_MODE_KEY) === "planner") refresh();
           else showTripSelector();
+          setupPeriodicSync();
           if (authUser) maybeAutoPullTripsFromSupabase();
         }, 0);
       }).data.subscription;
@@ -1182,7 +1189,7 @@
     }
 
     function getSyncSettings() {
-      if (isLocalOnly()) return { autosync: false, intervalMinutes: 5, syncOnOpen: false };
+      if (isLocalOnly() || !authUserId()) return { autosync: false, intervalMinutes: 5, syncOnOpen: false };
       return readJSON(SYNC_SETTINGS_KEY, { autosync: true, intervalMinutes: 5, syncOnOpen: true });
     }
 
@@ -1380,6 +1387,10 @@
 
     async function autosyncNow() {
       if (isLocalOnly()) return;
+      if (!authUserId()) {
+        setSyncStatus("Cloud Sync: увійдіть через email");
+        return;
+      }
       if (isSyncing) {
         pendingSync = true;
         return;
@@ -2488,6 +2499,7 @@
     }
 
     function refreshAfterAuth() {
+      setupPeriodicSync();
       if (localStorage.getItem(PLANNER_MODE_KEY) === "planner") refresh();
       else showTripSelector();
     }
